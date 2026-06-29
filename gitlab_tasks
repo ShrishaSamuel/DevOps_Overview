@@ -1,0 +1,610 @@
+# GitLab CI/CD Interview Preparation — Hands-On Tasks
+
+> A curated set of real-world GitLab CI/CD challenges organized by difficulty.  
+> Each task mirrors scenarios you will encounter in DevOps interviews and on the job.
+
+---
+
+## Table of Contents
+
+1. [Beginner Tasks](#beginner-tasks)
+2. [Intermediate Tasks](#intermediate-tasks)
+3. [Advanced Tasks](#advanced-tasks)
+4. [Troubleshooting & Debugging Tasks](#troubleshooting--debugging-tasks)
+
+---
+
+## Beginner Tasks
+
+---
+
+### Task B1 — Write Your First Multi-Stage Pipeline
+
+**Problem Statement**  
+A project has no CI at all. Write a `.gitlab-ci.yml` that runs three sequential stages: `build` (compiles the app), `test` (runs unit tests), and `deploy` (echoes a deployment message). If `test` fails, `deploy` must not run. Each job must print the current branch name and commit SHA to its log.
+
+**Expected Outcome**
+- Pipeline shows three stages in order in the GitLab UI.
+- Failing the test job (introduce a deliberate `exit 1`) blocks the deploy job.
+- Each job log contains the branch name and commit SHA from predefined CI variables.
+- All jobs use the `alpine:3.19` image.
+- Pipeline duration is under 60 seconds.
+
+**Hints**
+- Use `stages:` to define order; jobs inherit their stage via the `stage:` key.
+- `CI_COMMIT_REF_NAME` and `CI_COMMIT_SHA` are predefined variables available in every job.
+- To simulate a test failure, add `script: - exit 1` temporarily, then observe downstream jobs are skipped.
+- Jobs in the same stage run in parallel by default — use `needs:` to create finer dependencies.
+- Use `echo "Branch: $CI_COMMIT_REF_NAME"` in the `before_script` section to avoid repeating it in every job's `script`.
+
+**Skills Tested**
+- `.gitlab-ci.yml` basic structure (stages, jobs, script)
+- Sequential stage execution and failure propagation
+- Predefined CI/CD variables
+- `before_script` for shared setup logic
+- Pipeline visualization in GitLab UI
+
+---
+
+### Task B2 — Cache Dependencies to Speed Up Pipeline Builds
+
+**Problem Statement**  
+A Node.js project runs `npm install` on every pipeline run, taking 3–4 minutes each time. The `node_modules` directory is never reused between jobs or pipeline runs. Add caching so that `npm install` is skipped entirely on subsequent runs when `package-lock.json` hasn't changed.
+
+**Expected Outcome**
+- First pipeline run: cache miss, full `npm install` runs.
+- Second pipeline run (no `package-lock.json` change): cache hit, `npm install` is skipped or nearly instant.
+- `package-lock.json` change: cache is invalidated and `npm install` runs again.
+- Cache key is based on the hash of `package-lock.json`, not a static string.
+- `node_modules/.bin` is visible in subsequent jobs without reinstalling.
+
+**Hints**
+- Use `cache:` with `key: $CI_COMMIT_REF_SLUG` as a simple start, then improve with `files: [package-lock.json]`.
+- `key: files: [package-lock.json]` generates a hash from the file content — perfect cache invalidation.
+- Set `paths: [node_modules/]` under `cache:`.
+- Use `policy: pull` in jobs that only consume the cache (don't need to update it) to speed them up.
+- `cache:when: on_success` avoids caching a broken `node_modules` from a failed install.
+
+**Skills Tested**
+- GitLab cache configuration and cache key strategies
+- `files:`-based cache invalidation
+- `policy: pull` vs `pull-push` for cache optimization
+- Understanding cache scope (branch vs global vs runner-local)
+
+---
+
+### Task B3 — Pass Data Between Jobs Using Artifacts
+
+**Problem Statement**  
+A build job compiles a binary and a test job must verify that binary exists and run it. The two jobs run on different runners (no shared filesystem). Pass the compiled binary from the `build` job to the `test` job using GitLab artifacts. Also produce a JUnit XML test report that GitLab displays natively in the merge request UI.
+
+**Expected Outcome**
+- `test` job receives the binary produced by `build` without any manual download.
+- `build` job artifacts expire after 1 hour (not kept forever).
+- Test results appear in the MR under the "Tests" tab as passed/failed counts.
+- `artifacts:paths` only includes the binary — not the entire workspace.
+- Downloading the artifact from the GitLab UI works as a zip file.
+
+**Hints**
+- `artifacts:paths:` in the producing job; the consuming job in the next stage automatically downloads them.
+- Use `artifacts:expire_in: 1 hour` to avoid artifact storage buildup.
+- JUnit report: `artifacts:reports:junit: report.xml` — the file must be a valid JUnit XML.
+- Use `dependencies: [build]` in downstream jobs to explicitly declare which artifact to pull (and skip pulling from other jobs).
+- `artifacts:when: always` ensures test reports are uploaded even when the job fails (so you can see why).
+
+**Skills Tested**
+- Artifact passing between jobs and stages
+- Artifact expiry and storage management
+- JUnit test report integration in MR UI
+- `dependencies:` for selective artifact download
+- `artifacts:when: always` for failure reports
+
+---
+
+### Task B4 — Restrict Jobs to Specific Branches with Rules
+
+**Problem Statement**  
+A pipeline currently runs the `deploy-production` job on every push, including feature branches. Refactor the pipeline so that: `deploy-production` only runs on the `main` branch, `deploy-staging` only runs on the `develop` branch, and all other jobs run on every branch. No job should use the deprecated `only/except` syntax.
+
+**Expected Outcome**
+- Push to a feature branch: build and test jobs run; both deploy jobs are skipped.
+- Push to `develop`: build, test, and `deploy-staging` run; `deploy-production` is skipped.
+- Push to `main`: build, test, and `deploy-production` run; `deploy-staging` is skipped.
+- Pipeline graph clearly shows which jobs are active per branch.
+- `rules:` syntax used exclusively — no `only:` or `except:` keywords.
+
+**Hints**
+- Use `rules: - if: '$CI_COMMIT_BRANCH == "main"'` for production deploy.
+- Add `when: never` as the final catch-all rule to ensure the job is skipped on all other branches.
+- `rules:` are evaluated top-to-bottom — first match wins.
+- Use `workflow:rules:` to control whether the entire pipeline runs (e.g., skip pipelines for draft MRs).
+- `CI_COMMIT_BRANCH` is not set for tag pipelines — use `CI_COMMIT_TAG` for tag-based deploys.
+
+**Skills Tested**
+- `rules:` syntax vs deprecated `only/except`
+- Branch-based job inclusion/exclusion
+- `workflow:rules:` for pipeline-level control
+- Understanding `CI_COMMIT_BRANCH` vs `CI_COMMIT_TAG` vs `CI_MERGE_REQUEST_IID`
+
+---
+
+## Intermediate Tasks
+
+---
+
+### Task I1 — Configure and Register a Self-Hosted GitLab Runner
+
+**Problem Statement**  
+Your team's shared runners are overloaded and pipelines are waiting 20+ minutes in queue. Install and register a dedicated self-hosted GitLab Runner on a Linux VM using the Docker executor. The runner must only pick up jobs tagged with `docker-runner`, must not run untagged jobs, and must limit concurrent jobs to 4.
+
+**Expected Outcome**
+- Runner appears in `Settings > CI/CD > Runners` as `online` and `specific`.
+- A job tagged `tags: [docker-runner]` picks up on the new runner, not shared runners.
+- An untagged job does NOT run on this runner.
+- `config.toml` shows `concurrent = 4` and `run_untagged = false`.
+- Runner executor is `docker` with `alpine:3.19` as the default image.
+
+**Hints**
+- Install: `curl -L https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh | bash && apt-get install gitlab-runner`.
+- Register: `gitlab-runner register --url <gitlab-url> --token <registration-token> --executor docker`.
+- Edit `/etc/gitlab-runner/config.toml` to set `concurrent`, `run_untagged`, and `default_image`.
+- Use `gitlab-runner verify` to check runner connectivity after config changes.
+- `gitlab-runner restart` is required after editing `config.toml`.
+- The Docker executor needs the Docker socket or Docker-in-Docker (`dind`) for building images.
+
+**Skills Tested**
+- GitLab Runner installation and registration
+- `config.toml` configuration (concurrency, executor, tags)
+- Shared vs specific vs group vs project runners
+- Runner tagging and job routing
+- Docker executor fundamentals
+
+---
+
+### Task I2 — Manage Secrets Securely with CI/CD Variables and Vault
+
+**Problem Statement**  
+Your pipeline currently has database passwords and API keys hardcoded in `.gitlab-ci.yml` (committed to the repo). Migrate all secrets to GitLab CI/CD variables. Mark sensitive variables as `masked` and `protected`. Then go further: integrate HashiCorp Vault so that short-lived database credentials are fetched at runtime, not stored statically.
+
+**Expected Outcome**
+- No secrets in `.gitlab-ci.yml` — only variable names like `$DB_PASSWORD`.
+- Masked variables do not appear in job logs even with `echo $DB_PASSWORD`.
+- Protected variables only appear in jobs running on protected branches (`main`).
+- `vault kv get -field=password secret/db` inside a job returns the credential using a JWT from GitLab's OIDC integration.
+- Vault credentials are scoped to a 1-hour TTL — not reusable after the pipeline ends.
+
+**Hints**
+- Set variables at `Settings > CI/CD > Variables`. Check `Masked` and `Protected` as appropriate.
+- Masked variables must match the masking pattern (min 8 chars, no newlines, no special chars for some types).
+- For Vault OIDC: GitLab passes `CI_JOB_JWT_V2` as the JWT — configure Vault's JWT auth method with GitLab's JWKS URL.
+- Vault policy should allow only `read` on the specific secret path required by the pipeline.
+- Use `secrets:` keyword in `.gitlab-ci.yml` (native GitLab-Vault integration) for cleaner syntax.
+
+**Skills Tested**
+- GitLab CI/CD variable types (masked, protected, file)
+- Secret hygiene (no plaintext secrets in `.gitlab-ci.yml`)
+- HashiCorp Vault JWT/OIDC integration with GitLab
+- Short-lived credential patterns
+- `secrets:` keyword in `.gitlab-ci.yml`
+
+---
+
+### Task I3 — Build, Scan, and Push Docker Images to GitLab Container Registry
+
+**Problem Statement**  
+Create a pipeline that builds a Docker image, scans it for vulnerabilities using Trivy, and pushes it to the GitLab Container Registry only if no `CRITICAL` severity CVEs are found. The image must be tagged with both `latest` and the commit SHA. Failed scans must block the push stage.
+
+**Expected Outcome**
+- `docker build` uses the GitLab Container Registry URL (`$CI_REGISTRY_IMAGE`).
+- Trivy scan stage runs after build and fails the pipeline on any `CRITICAL` CVE.
+- Image is tagged `$CI_REGISTRY_IMAGE:latest` and `$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA`.
+- `docker push` only runs if the scan job passed (enforced via `needs:` dependency).
+- Images are visible in `Packages & Registries > Container Registry` in GitLab.
+- Old images are cleaned up by a scheduled pipeline using the GitLab registry cleanup API.
+
+**Hints**
+- Login to registry: `docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY`.
+- `$CI_REGISTRY_IMAGE` = `registry.gitlab.com/<group>/<project>`.
+- Use Docker-in-Docker (`image: docker:24` + `services: [docker:24-dind]`) or Kaniko for rootless builds.
+- Trivy: `trivy image --exit-code 1 --severity CRITICAL $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA`.
+- Use `needs: [scan]` in the push job to create an explicit dependency that blocks on scan failure.
+
+**Skills Tested**
+- GitLab Container Registry authentication and usage
+- Docker-in-Docker vs Kaniko executor comparison
+- Vulnerability scanning gate in CI pipeline
+- `needs:` for DAG-based job dependencies
+- Image tagging strategy (`latest` + SHA)
+
+---
+
+### Task I4 — Implement a Multi-Environment Deployment Pipeline with Manual Gates
+
+**Problem Statement**  
+Build a deployment pipeline for three environments: `dev` (auto-deploys on every push to `develop`), `staging` (auto-deploys on push to `main`, but requires a 5-minute smoke test to pass), and `production` (deploys to `main` only after a manual approval click in GitLab). All environments must be tracked in GitLab's Environments UI with deployment history.
+
+**Expected Outcome**
+- Push to `develop` → `deploy-dev` runs automatically, no manual step.
+- Push to `main` → `deploy-staging` runs, then `smoke-test`, then `deploy-production` waits for manual approval.
+- Clicking "Play" on the `deploy-production` job in GitLab UI triggers the deployment.
+- All three environments appear in `Deployments > Environments` with URLs and last deployment info.
+- Rolling back production triggers the previous deployment's job automatically.
+
+**Hints**
+- `when: manual` makes a job require a Play button click.
+- Use `environment: name: production` and `environment: url: https://myapp.com` to register the deployment in GitLab's Environments.
+- `allow_failure: false` on a manual job blocks downstream jobs until it's clicked.
+- `on_stop:` in the environment config enables the "Stop Environment" button in GitLab UI.
+- Use `CI_ENVIRONMENT_SLUG` to construct dynamic URLs in review app environments.
+
+**Skills Tested**
+- GitLab Environments and deployment tracking
+- `when: manual` approval gates
+- Environment `url:` and `on_stop:` configuration
+- Multi-branch deployment strategy
+- Rollback via GitLab environment history
+
+---
+
+### Task I5 — Optimize Pipeline Speed with DAG and Parallel Jobs
+
+**Problem Statement**  
+A monorepo pipeline runs all jobs sequentially and takes 45 minutes. Analysis shows: unit tests for 4 microservices can run in parallel, integration tests can start as soon as their respective unit tests pass (not after ALL unit tests finish), and the final deployment only needs integration tests to pass. Redesign the pipeline using a DAG (Directed Acyclic Graph) to cut runtime to under 15 minutes.
+
+**Expected Outcome**
+- All 4 unit test jobs run in parallel.
+- Each integration test job starts immediately after its own unit test passes (not waiting for others).
+- Deployment job starts as soon as all 4 integration test jobs pass.
+- `needs:` is used to define dependencies — not just `stages:`.
+- Pipeline graph in GitLab UI shows the DAG fan-out and fan-in structure visually.
+- Total pipeline time reduced from 45 to under 15 minutes.
+
+**Hints**
+- `needs: [unit-test-service-a]` in `integration-test-service-a` creates a direct dependency without waiting for the full stage.
+- A job with `needs: []` runs immediately without waiting for any prior stage.
+- `parallel: 4` can split a single job into N parallel instances — useful for test sharding.
+- `parallel:matrix:` runs the same job with different variable combinations (e.g., different service names).
+- Use `CI_NODE_INDEX` and `CI_NODE_TOTAL` inside a `parallel:` job to shard test suites manually.
+
+**Skills Tested**
+- DAG pipelines with `needs:`
+- `parallel:` and `parallel:matrix:` for job fan-out
+- Pipeline runtime analysis and optimization
+- Stage-based vs DAG-based execution models
+- GitLab pipeline graph visualization
+
+---
+
+## Advanced Tasks
+
+---
+
+### Task A1 — Implement Dynamic Child Pipelines for a Monorepo
+
+**Problem Statement**  
+Your monorepo contains 6 independent services. Currently, every push rebuilds and tests all 6 services — even if only one changed. Implement a parent-child pipeline architecture where the parent pipeline detects which services have changed (compared to the last commit) and triggers child pipelines only for those services.
+
+**Expected Outcome**
+- Changing only `services/auth/` triggers only the `auth` child pipeline.
+- Changing files in `services/api/` and `services/auth/` triggers both child pipelines in parallel.
+- Changing a shared library (`libs/common/`) triggers all 6 child pipelines.
+- Each child pipeline is a full build → test → deploy flow for its service.
+- Parent pipeline completes in under 2 minutes when only 1 service changes.
+
+**Hints**
+- Use `git diff --name-only $CI_COMMIT_BEFORE_SHA $CI_COMMIT_SHA` to detect changed files.
+- Parent job generates child pipeline YAML dynamically using a script and outputs it as an artifact.
+- Use `trigger: include: artifact:` to trigger a child pipeline from a generated YAML file.
+- `trigger:strategy: depend` makes the parent wait for child pipeline completion and propagates failures.
+- Handle the edge case where `CI_COMMIT_BEFORE_SHA` is `0000000000000000000000000000000000000000` (first push to a branch — build everything).
+
+**Skills Tested**
+- Parent-child pipeline architecture
+- Dynamic pipeline generation from scripts
+- `trigger: include: artifact:` syntax
+- Change detection in monorepos
+- `trigger:strategy: depend` for failure propagation
+
+---
+
+### Task A2 — Build a GitOps Deployment Pipeline with Environment Promotion
+
+**Problem Statement**  
+Implement a GitOps-style pipeline where application versions are promoted through environments by updating a Helm `values.yaml` in a separate `gitops-config` repository. The pipeline must: build and push the image with a semver tag, open an MR in the `gitops-config` repo to update the image tag for staging, auto-merge after tests pass, and require a separate manual MR for production promotion.
+
+**Expected Outcome**
+- `git tag v1.2.3` triggers the pipeline, builds `myapp:v1.2.3`, and pushes to the registry.
+- Pipeline opens an MR in `gitops-config` repo changing `staging/values.yaml: image.tag: v1.2.3`.
+- After MR approval and merge, a deploy pipeline in `gitops-config` applies the Helm change to staging.
+- Production promotion requires a separate MR to `production/values.yaml` — no auto-merge.
+- Version history is visible in the `gitops-config` repo's git log.
+
+**Hints**
+- Use `CI_JOB_TOKEN` to authenticate GitLab API calls and clone other repos: `git clone https://gitlab-ci-token:$CI_JOB_TOKEN@gitlab.com/group/gitops-config.git`.
+- GitLab MR API: `POST /projects/:id/merge_requests` — set `target_branch`, `title`, and `description`.
+- Use `sed -i "s/tag:.*/tag: $CI_COMMIT_TAG/" staging/values.yaml` to update the values file.
+- Configure `gitops-config` repo to trigger deployments on merge to `main` using `rules: - if: '$CI_COMMIT_BRANCH == "main"'`.
+- Avoid circular triggers: the gitops-config pipeline should not trigger the app pipeline.
+
+**Skills Tested**
+- GitOps promotion pattern
+- Cross-repo pipeline automation via GitLab API
+- `CI_JOB_TOKEN` for cross-project authentication
+- Semver tagging and tag-triggered pipelines
+- Separation of app code and deployment config (config drift prevention)
+
+---
+
+### Task A3 — Implement Pipeline Security: SAST, DAST, Dependency Scanning, and Secret Detection
+
+**Problem Statement**  
+A security audit found that your project has no automated security scanning. Implement a full DevSecOps pipeline that runs: SAST on every MR, dependency scanning weekly (not on every push), secret detection that fails the pipeline if credentials are found in the code, and DAST against a review app URL after staging deployment.
+
+**Expected Outcome**
+- SAST findings appear in the MR security tab with severity levels.
+- Dependency scanning runs on a weekly schedule and its findings are tracked over time.
+- A test commit containing a fake AWS key (`AKIAIOSFODNN7EXAMPLE`) is blocked by secret detection.
+- DAST scan runs against `https://staging-$CI_ENVIRONMENT_SLUG.myapp.com` after the staging deploy job.
+- All security reports are available as downloadable artifacts and visible in the GitLab Security Dashboard.
+
+**Hints**
+- Include GitLab's security templates: `include: - template: Security/SAST.gitlab-ci.yml`.
+- Scheduled pipelines: `rules: - if: '$CI_PIPELINE_SOURCE == "schedule"'` — create the schedule in `CI/CD > Schedules`.
+- Secret detection template: `include: - template: Security/Secret-Detection.gitlab-ci.yml` — set `SECRET_DETECTION_HISTORIC_SCAN: "true"` for the first run.
+- DAST requires `DAST_WEBSITE` variable set to the staging URL — pass it from the deploy job's environment URL.
+- Use `allow_failure: true` on DAST to avoid blocking production if the staging URL is flaky — but track findings.
+
+**Skills Tested**
+- GitLab security scanning templates (SAST, DAST, dependency scanning, secret detection)
+- DevSecOps pipeline integration
+- Scheduled pipeline configuration
+- Security Dashboard and MR security widget
+- `allow_failure:` risk trade-off for security gates
+
+---
+
+### Task A4 — Build a Self-Service Review App System
+
+**Problem Statement**  
+Developers want isolated preview environments for every feature branch MR — automatically created when an MR is opened and destroyed when it's closed. Each review app must have a unique URL (`https://<branch-slug>.review.myapp.com`), deploy the latest commit's Docker image, and be accessible to reviewers without any manual DevOps intervention.
+
+**Expected Outcome**
+- Opening an MR triggers a `deploy-review` job that deploys the app to a Kubernetes namespace named after `$CI_ENVIRONMENT_SLUG`.
+- The review app URL appears in the MR as a clickable button.
+- Closing or merging the MR triggers the `stop-review` job, which deletes the Kubernetes namespace.
+- Two open MRs result in two independent, isolated environments running simultaneously.
+- `kubectl get namespaces` shows one namespace per open MR and none for closed MRs.
+
+**Hints**
+- Use `environment: name: review/$CI_COMMIT_REF_SLUG` and `url: https://$CI_ENVIRONMENT_SLUG.review.myapp.com`.
+- `on_stop: stop-review` in the deploy job links it to the cleanup job.
+- `stop-review` job must have `environment: action: stop` and `when: manual` (GitLab triggers it automatically on MR close).
+- Use `CI_MERGE_REQUEST_IID` in rules to ensure review apps only deploy for MR pipelines: `if: '$CI_PIPELINE_SOURCE == "merge_request_event"'`.
+- Pass `KUBECONFIG` as a GitLab file variable to authenticate `kubectl` in the runner.
+
+**Skills Tested**
+- Dynamic review environments
+- `environment: on_stop:` and `action: stop`
+- MR pipeline source (`CI_PIPELINE_SOURCE == "merge_request_event"`)
+- Kubernetes namespace-per-branch pattern
+- Automated environment cleanup lifecycle
+
+---
+
+## Troubleshooting & Debugging Tasks
+
+---
+
+### Task T1 — Debug a Pipeline That Is Stuck in "Pending" Forever
+
+**Problem Statement**  
+A pipeline has been in `pending` state for 45 minutes. No jobs have started. The project previously had working pipelines. Diagnose all possible causes and resolve the issue.
+
+**Expected Outcome**
+- Root cause identified from a systematic checklist.
+- Pipeline jobs start running within 5 minutes of the fix.
+- Root cause documented (e.g., all runners offline, runner tag mismatch, runner at max concurrency, runner paused, no runner available for the executor type).
+
+**Hints**
+- Check `Settings > CI/CD > Runners`: are any runners listed as `online`? Are they paused?
+- Job tags: if the job requires `tags: [gpu]` but no runner has the `gpu` tag, it waits forever.
+- Runner concurrency: `concurrent` in `config.toml` limits simultaneous jobs — a busy runner won't pick up new jobs.
+- Shared runner minutes: if using GitLab.com, the project may have exhausted its CI/CD minutes quota.
+- Check if the runner process is actually running on the host: `systemctl status gitlab-runner`.
+- Use `gitlab-runner verify` to check if registered runners can reach GitLab.
+
+**Skills Tested**
+- Runner lifecycle troubleshooting (online/offline/paused)
+- Tag mismatch diagnosis
+- Runner concurrency limits
+- CI minute quota awareness
+- `gitlab-runner` CLI for diagnostics
+
+---
+
+### Task T2 — Fix a Pipeline Where Caches Are Never Hit
+
+**Problem Statement**  
+A pipeline has cache configured but every job log shows `cache:restore: no match found` or the cache is uploaded on every run but never reused. The pipeline takes just as long as without caching. Find all possible reasons and fix them.
+
+**Expected Outcome**
+- Cache hit rate improves to > 90% for runs with no dependency changes.
+- Job logs show `cache:restore: Extracting cache...` on cache hits.
+- Cache key changes only when `package-lock.json` changes.
+- Fixed pipeline takes 30 seconds vs the previous 3 minutes.
+
+**Hints**
+- Cache is stored on the runner — if different runners handle each job, they don't share a local cache. Use a distributed cache (S3) or pin jobs to the same runner with tags.
+- Cache key must be deterministic — if it includes `$CI_COMMIT_SHA`, it changes on every commit (cache miss every time).
+- `GIT_CLEAN_FLAGS: -ffdx` in variables wipes the workspace including cached `node_modules` before the job — remove it.
+- `cache:paths:` must include the exact directory that the build tool uses — verify by checking after a fresh install.
+- GitLab.com shared runners use distributed cache by default, but the key must match exactly (including `$CI_PROJECT_ID` scoping).
+
+**Skills Tested**
+- Cache key design and debugging
+- Runner-local vs distributed cache architecture
+- `GIT_CLEAN_FLAGS` interaction with cache
+- Systematic cache miss diagnosis
+- Cache scope and runner affinity
+
+---
+
+### Task T3 — Diagnose and Fix Intermittent "Exit Code 137" Job Failures
+
+**Problem Statement**  
+Several pipeline jobs randomly fail with `exit code: 137` and no clear error message in the logs. The failures are not deterministic — the same commit sometimes passes, sometimes fails. There is no application bug. Find the root cause and prevent it.
+
+**Expected Outcome**
+- Root cause identified as OOM (Out of Memory) kill by the Linux kernel or Docker — exit code 137 = 128 + SIGKILL.
+- Memory usage of the job's Docker container is measured.
+- Runner's Docker executor is configured with appropriate memory limits or the job image is replaced with a less memory-hungry alternative.
+- Pipeline passes consistently for 10 consecutive runs after the fix.
+
+**Hints**
+- Exit code 137 = process received SIGKILL, almost always from the OOM killer.
+- Check if the runner host is memory-constrained: `free -h` and `dmesg | grep -i oom` on the runner host.
+- Docker executor config in `config.toml`: `[[runners.docker]] memory = "2g"` limits per-container memory.
+- If using `parallel:` jobs on the same runner, multiple containers run simultaneously — multiply memory usage.
+- Some build tools (Webpack, Maven, Gradle) are memory-hungry — set heap size explicitly (e.g., `NODE_OPTIONS=--max-old-space-size=1024`).
+
+**Skills Tested**
+- Linux exit code interpretation (137 = SIGKILL/OOM)
+- Docker container memory limits in `config.toml`
+- OOM diagnosis with `dmesg` and `free`
+- Runner resource planning for parallel jobs
+- Build tool memory configuration
+
+---
+
+### Task T4 — Fix a Pipeline That Fails Only on Protected Branches
+
+**Problem Statement**  
+A pipeline job that deploys to production consistently fails on `main` with `ERROR: variable DB_PASSWORD not found` but works perfectly on feature branches. The variable is set in GitLab CI/CD settings. No code was changed between the last working run and this failure.
+
+**Expected Outcome**
+- Root cause identified: the variable is set as `Protected` but the runner or branch configuration has changed.
+- Fix applied without compromising the security model (the variable should remain protected).
+- Pipeline passes on `main` and the variable is not exposed to unprotected branches.
+
+**Hints**
+- `Protected` variables are only injected into pipelines running on protected branches or protected tags — verify that `main` is still marked as a protected branch in `Settings > Repository > Protected Branches`.
+- Check if the variable scope is set to a specific environment — if it's scoped to `production` but the job has no `environment:` block, the variable is not injected.
+- If the runner was re-registered, confirm it's still associated with the protected branch scope.
+- Masked + Protected variables require the job to run on a protected branch AND the runner must not be a shared runner if you've restricted it.
+- Add a debug step: `env | grep -v PASSWORD | sort` (avoid printing sensitive values) to see which variables are actually available.
+
+**Skills Tested**
+- Protected branch and protected variable interaction
+- Variable scoping by environment
+- GitLab variable injection conditions
+- Security model of protected vs masked variables
+- Debugging missing variable issues without exposing secrets
+
+---
+
+### Task T5 — Resolve a Docker-in-Docker Permission Denied Error
+
+**Problem Statement**  
+A pipeline job that builds Docker images fails with `Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?` or `permission denied while trying to connect to the Docker daemon socket`. The runner uses the Docker executor. Fix it using two different approaches and explain the security trade-off of each.
+
+**Expected Outcome**
+- Approach 1: Docker-in-Docker (`dind`) service configured correctly — builds succeed.
+- Approach 2: Docker socket binding via a bind mount — builds succeed.
+- Approach 3 (bonus): Kaniko used for rootless, socket-free image builds.
+- The security implications of each approach are documented.
+- `DOCKER_HOST=tcp://docker:2376` with TLS is used for `dind` (not the insecure `2375`).
+
+**Hints**
+- DinD approach: add `services: [docker:24-dind]` and set `DOCKER_HOST: tcp://docker:2376` + `DOCKER_TLS_CERTDIR: /certs`.
+- Socket binding approach: in `config.toml`, add `volumes = ["/var/run/docker.sock:/var/run/docker.sock"]` under `[[runners.docker]]`.
+- Socket binding gives the container root-equivalent access to the host Docker daemon — it's a container escape risk.
+- DinD with TLS is safer but requires `privileged = true` in `config.toml` — also a security concern but more isolated.
+- Kaniko (`gcr.io/kaniko-project/executor`) builds images from a Dockerfile without needing Docker daemon access at all.
+
+**Skills Tested**
+- Docker-in-Docker (DinD) configuration with TLS
+- Docker socket binding and its security implications
+- Runner `config.toml` volume mounts and `privileged` mode
+- Kaniko as a rootless alternative
+- Container escape risk awareness
+
+---
+
+## Quick Reference — Key GitLab CI/CD Concepts
+
+| Concept | Notes |
+|---|---|
+| `stages:` | Defines execution order; jobs in same stage run in parallel |
+| `needs:` | DAG dependency — job starts as soon as its `needs` complete, ignoring stage order |
+| `rules:` | Replaces `only/except`; evaluated top-to-bottom, first match wins |
+| `workflow:rules:` | Controls whether the entire pipeline is created |
+| `cache:` | Persists files between jobs/pipelines; key-based invalidation |
+| `artifacts:` | Passes files between jobs; uploaded to GitLab; has expiry |
+| `environment:` | Registers deployments in GitLab's Environments UI; enables rollback |
+| `when: manual` | Requires human approval (Play button) before job runs |
+| `trigger:` | Triggers a child pipeline or another project's pipeline |
+| `parallel:matrix:` | Runs the same job multiple times with different variable sets |
+| `extends:` | YAML anchor alternative — inherits job config from a template |
+| `!reference` | References specific sections from other jobs (more flexible than `extends`) |
+| `include:` | Imports external YAML files (local, remote, template, or other project) |
+| `interruptible: true` | Allows a job to be cancelled when a newer pipeline starts |
+| `resource_group:` | Prevents concurrent deployments to the same environment |
+
+---
+
+## Predefined Variables Cheat Sheet
+
+| Variable | Value |
+|---|---|
+| `CI_COMMIT_SHA` | Full 40-char commit hash |
+| `CI_COMMIT_SHORT_SHA` | First 8 chars of commit hash |
+| `CI_COMMIT_REF_NAME` | Branch or tag name |
+| `CI_COMMIT_REF_SLUG` | URL-safe version of branch name |
+| `CI_COMMIT_TAG` | Tag name (only set in tag pipelines) |
+| `CI_PIPELINE_SOURCE` | `push`, `merge_request_event`, `schedule`, `trigger`, `web` |
+| `CI_MERGE_REQUEST_IID` | MR number (only in MR pipelines) |
+| `CI_ENVIRONMENT_SLUG` | URL-safe environment name |
+| `CI_REGISTRY_IMAGE` | Full path to project's container registry |
+| `CI_JOB_TOKEN` | Short-lived token for GitLab API and cross-project auth |
+| `CI_PROJECT_ID` | Numeric project ID |
+| `CI_NODE_INDEX` | Current index in a `parallel:` job (1-based) |
+| `CI_NODE_TOTAL` | Total count in a `parallel:` job |
+
+---
+
+## Interview Cheat Sheet
+
+- **"What is the difference between `cache` and `artifacts`?"**  
+  Cache speeds up pipelines by persisting files (e.g., `node_modules`) between runs — it's a performance tool, not reliable for job-to-job data passing. Artifacts pass files reliably between jobs within the same pipeline — they're uploaded to GitLab and downloadable. Don't use cache for critical data; don't use artifacts for performance optimization.
+
+- **"Explain `needs:` vs `stages:`."**  
+  `stages:` creates a global ordering — all jobs in stage N must finish before any job in stage N+1 starts. `needs:` creates a DAG where a job starts as soon as its specific dependencies finish, regardless of stage. `needs:` can cut pipeline time dramatically in parallel workloads.
+
+- **"What is `rules:` and why replace `only/except`?"**  
+  `only/except` uses OR logic and has surprising edge cases (especially with merge request pipelines). `rules:` is explicit, evaluated top-to-bottom (first match wins), supports `if`, `changes`, `exists`, `when`, and `variables`. It's more readable, more powerful, and the current standard.
+
+- **"How does GitLab runner executor selection work?"**  
+  The runner's executor (Docker, Shell, Kubernetes, etc.) is set at registration time. The pipeline's `image:` keyword only applies to Docker/Kubernetes executors. A Shell executor runs jobs directly on the host OS — no image isolation. Always prefer Docker or Kubernetes executors for security and reproducibility.
+
+- **"How do you prevent two deployment pipelines from running simultaneously?"**  
+  Use `resource_group: production` on deployment jobs. Only one job with the same `resource_group` value can run at a time across all pipelines — others queue. This prevents race conditions in deployments.
+
+- **"What is the difference between protected and masked variables?"**  
+  Masked: the value is redacted from job logs. Protected: the variable is only injected into pipelines on protected branches/tags. They are independent settings — you can have masked + unprotected (visible everywhere, redacted in logs) or unmasked + protected (only on protected branches, visible in logs).
+
+---
+
+## Study Path
+
+```
+Week 1  → B1, B2, B3, B4         (Pipeline basics, cache, artifacts, rules)
+Week 2  → I1, I2, I3             (Runners, secrets, container registry)
+Week 3  → I4, I5, T1, T2         (Environments, DAG, pending/cache debugging)
+Week 4  → T3, T4, T5             (OOM kills, protected variables, DinD)
+Week 5  → A1, A2                 (Dynamic child pipelines, GitOps promotion)
+Week 6  → A3, A4                 (DevSecOps scanning, review apps)
+```
+
+---
+
+*Practice every task on a free GitLab.com account with a self-hosted runner on a local VM or Docker container. Reading `config.toml` fluently and being able to write `.gitlab-ci.yml` from memory are the two skills that separate junior from senior DevOps engineers in interviews.*
