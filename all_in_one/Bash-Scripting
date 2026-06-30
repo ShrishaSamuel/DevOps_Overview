@@ -1,0 +1,748 @@
+# Bash Scripting — Zero to Hero
+
+> A complete, beginner-to-advanced guide to Bash scripting for automation and DevOps.
+
+---
+
+## Table of Contents
+
+1. [Introduction & Theory](#1-introduction--theory)
+2. [Installation & Setup](#2-installation--setup)
+3. [Core Concepts](#3-core-concepts)
+4. [Hands-on Tasks](#4-hands-on-tasks)
+5. [Projects](#5-projects)
+6. [Best Practices & Common Pitfalls](#6-best-practices--common-pitfalls)
+7. [Interview Questions](#7-interview-questions)
+8. [Quizzes](#8-quizzes)
+9. [Further Resources](#9-further-resources)
+
+---
+
+## 1. Introduction & Theory
+
+### 1.1 What is Bash?
+
+**Bash** (**B**ourne **A**gain **SH**ell) is a **command-line shell and scripting language** for Unix-like operating systems. It's the default shell on most Linux distributions and was long the default on macOS. As a shell, it interprets commands you type; as a scripting language, it lets you combine those commands into reusable programs (**scripts**) that automate tasks.
+
+### 1.2 Why Bash for DevOps?
+
+| Reason | Explanation |
+|--------|-------------|
+| **Ubiquitous** | Present on virtually every Linux server, container, and CI runner |
+| **Glue language** | Ties together CLI tools, files, processes, and pipelines |
+| **Automation** | Provisioning, deployments, backups, cron jobs, CI steps |
+| **No dependencies** | Runs anywhere a shell exists — no runtime to install |
+| **Fast for system tasks** | Direct access to the OS, files, and processes |
+
+For complex logic or data structures, reach for Python; for system glue and quick automation, Bash is unbeatable.
+
+### 1.3 Shell vs. script
+
+- **Interactive shell:** You type commands one at a time; the shell executes each.
+- **Script:** A text file of commands executed in sequence — repeatable automation.
+
+```
+   You ──type──► Bash (interpreter) ──► runs commands ──► talks to the OS kernel
+                                                              │
+                                          files, processes, network, devices
+```
+
+### 1.4 How a script runs: the shebang
+
+The first line, the **shebang**, tells the OS which interpreter to use:
+
+```bash
+#!/usr/bin/env bash
+```
+
+`#!/usr/bin/env bash` finds Bash via `PATH` (more portable than hardcoding `/bin/bash`). Make the script executable (`chmod +x`) and run it (`./script.sh`).
+
+### 1.5 The execution model
+
+```
+   ./deploy.sh
+      │ kernel reads shebang → launches: bash deploy.sh
+      ▼
+   Bash reads the file line by line:
+      - performs expansions (variables, globs, command substitution)
+      - splits into words
+      - executes builtins or forks external programs
+      - each command returns an exit status ($?)
+```
+
+Every command returns an **exit status**: `0` = success, non-zero = failure. Scripts and conditionals rely on this.
+
+### 1.6 Bash vs. POSIX sh
+
+Bash is a superset of the POSIX shell (`sh`). Bash adds arrays, `[[ ]]`, `(( ))`, brace expansion, and more. For maximum portability (e.g., Alpine's `ash`, dash), stick to POSIX `sh`; otherwise Bash features make scripts cleaner. Always match your shebang to the features you use.
+
+### 1.7 When to use Bash (and when not)
+
+**Use Bash for:** orchestrating CLI commands, file/text processing with Unix tools, simple automation, CI/CD steps, system administration.
+
+**Avoid Bash for:** complex data structures, heavy arithmetic/floating point, parsing structured data (JSON/XML — use `jq`/Python), large applications, anything needing robust error handling and testing. Rule of thumb: if a Bash script exceeds ~100–200 lines or grows complex logic, consider Python.
+
+---
+
+## 2. Installation & Setup
+
+### 2.1 Check Bash
+
+```bash
+bash --version          # show version (5.x is current)
+echo $SHELL             # your login shell
+which bash              # path to bash
+```
+
+Bash is preinstalled on most Linux. On macOS (which ships an old Bash or zsh): `brew install bash`. On Windows: use WSL or Git Bash.
+
+### 2.2 Your first script
+
+```bash
+cat > hello.sh <<'EOF'
+#!/usr/bin/env bash
+echo "Hello, $USER! Today is $(date +%F)."
+EOF
+
+chmod +x hello.sh
+./hello.sh
+```
+
+**Expected:** Prints a greeting with your username and today's date.
+
+### 2.3 Editor and linting setup
+
+- Use an editor with shell support (VS Code + Bash extensions).
+- Install **ShellCheck** — the essential Bash linter:
+
+```bash
+sudo apt install shellcheck      # Debian/Ubuntu
+brew install shellcheck          # macOS
+shellcheck hello.sh
+```
+
+- Optionally **shfmt** for formatting.
+
+---
+
+## 3. Core Concepts
+
+### 3.1 BEGINNER
+
+#### 3.1.1 Variables
+
+```bash
+name="Alice"            # no spaces around =
+count=5
+echo "$name has $count items"     # always quote expansions
+
+readonly PI=3.14        # constant
+unset count             # remove a variable
+
+# Command substitution
+today=$(date +%F)
+files=$(ls | wc -l)
+```
+
+> **Always quote variables** (`"$var"`) to prevent word-splitting and globbing bugs.
+
+#### 3.1.2 Special variables
+
+| Variable | Meaning |
+|----------|---------|
+| `$0` | Script name |
+| `$1`, `$2`, ... | Positional arguments |
+| `$#` | Number of arguments |
+| `$@` | All arguments (as separate words, quoted) |
+| `$*` | All arguments (as one word) |
+| `$?` | Exit status of last command |
+| `$$` | Current process PID |
+| `$!` | PID of last background command |
+
+#### 3.1.3 Input and output
+
+```bash
+echo "Standard output"
+printf "%s is %d years old\n" "Alice" 30    # printf: precise formatting
+
+read -p "Enter your name: " username        # read input
+read -s -p "Password: " pass; echo          # silent (no echo)
+```
+
+#### 3.1.4 Conditionals
+
+```bash
+if [[ $count -gt 10 ]]; then
+  echo "many"
+elif [[ $count -eq 0 ]]; then
+  echo "none"
+else
+  echo "few"
+fi
+
+# String and file tests
+[[ -z "$var" ]]     # true if empty
+[[ -n "$var" ]]     # true if non-empty
+[[ "$a" == "$b" ]]  # string equality
+[[ -f file ]]       # regular file exists
+[[ -d dir ]]        # directory exists
+[[ -e path ]]       # exists
+[[ -r/-w/-x path ]] # readable/writable/executable
+```
+
+> Prefer `[[ ]]` (Bash) over `[ ]` (POSIX test) — safer with strings and supports `&&`, `||`, `=~`.
+
+#### 3.1.5 Numeric comparisons and arithmetic
+
+```bash
+[[ $a -lt $b ]]       # -lt -le -gt -ge -eq -ne
+(( a < b ))           # arithmetic context
+result=$(( a + b * 2 ))
+(( count++ ))
+```
+
+> Bash does **integer** math only. For floating point use `bc` or `awk`.
+
+#### 3.1.6 Loops
+
+```bash
+for i in 1 2 3; do echo "$i"; done
+for f in *.txt; do echo "$f"; done
+for i in {1..5}; do echo "$i"; done           # brace expansion
+for ((i=0; i<5; i++)); do echo "$i"; done      # C-style
+
+while read -r line; do echo "$line"; done < file.txt
+
+until [[ $x -ge 3 ]]; do echo "$x"; ((x++)); done
+```
+
+### 3.2 INTERMEDIATE
+
+#### 3.2.1 Functions
+
+```bash
+greet() {
+  local name="$1"          # local scope
+  echo "Hello, $name"
+  return 0                 # exit status (0-255)
+}
+
+greet "Bob"
+
+# Capture output
+result=$(greet "Carol")
+```
+
+> Use `local` for variables inside functions to avoid clobbering globals. Functions "return" data via `echo`/stdout, not `return` (which is a status code).
+
+#### 3.2.2 Arrays
+
+```bash
+fruits=("apple" "banana" "cherry")
+echo "${fruits[0]}"          # apple
+echo "${fruits[@]}"          # all elements
+echo "${#fruits[@]}"         # length (3)
+fruits+=("date")             # append
+for f in "${fruits[@]}"; do echo "$f"; done
+
+# Associative arrays (Bash 4+)
+declare -A ages
+ages[alice]=30
+ages[bob]=25
+echo "${ages[alice]}"
+for k in "${!ages[@]}"; do echo "$k = ${ages[$k]}"; done
+```
+
+#### 3.2.3 String manipulation
+
+```bash
+s="Hello, World"
+echo "${#s}"                 # length
+echo "${s:7}"                # substring from index 7 → "World"
+echo "${s:0:5}"              # "Hello"
+echo "${s/World/Bash}"       # replace first → "Hello, Bash"
+echo "${s//o/0}"             # replace all o → "Hell0, W0rld"
+echo "${s,,}"                # lowercase
+echo "${s^^}"                # uppercase
+
+file="/path/to/archive.tar.gz"
+echo "${file##*/}"           # basename → archive.tar.gz
+echo "${file%/*}"            # dirname → /path/to
+echo "${file%.*}"            # strip last ext → archive.tar
+echo "${file##*.}"           # last ext → gz
+
+# Default / required values
+echo "${VAR:-default}"       # use default if unset/empty
+echo "${VAR:?must be set}"   # error & exit if unset
+```
+
+#### 3.2.4 Exit codes and conditional chaining
+
+```bash
+command && echo "succeeded"      # runs if exit 0
+command || echo "failed"         # runs if non-zero
+command || exit 1                # bail out on failure
+
+mkdir -p /tmp/x && cd /tmp/x      # chain dependent steps
+```
+
+#### 3.2.5 Case statements
+
+```bash
+case "$1" in
+  start)   echo "starting" ;;
+  stop)    echo "stopping" ;;
+  restart) echo "restarting" ;;
+  *)       echo "usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
+```
+
+#### 3.2.6 Redirection and pipes
+
+```bash
+command > out.txt            # stdout to file (overwrite)
+command >> out.txt           # append
+command 2> err.txt           # stderr to file
+command > out.txt 2>&1       # both to file
+command &> all.txt           # both (Bash shortcut)
+command < input.txt          # stdin from file
+cmd1 | cmd2 | cmd3           # pipe stdout → stdin
+
+echo "log line" >&2          # write to stderr
+
+# Here-document / here-string
+cat <<EOF
+multi-line
+text with $variable expansion
+EOF
+grep "x" <<< "$mystring"     # here-string
+```
+
+#### 3.2.7 Reading arguments and getopts
+
+```bash
+while getopts "f:v" opt; do
+  case "$opt" in
+    f) file="$OPTARG" ;;
+    v) verbose=1 ;;
+    *) echo "usage: $0 [-v] -f file"; exit 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+```
+
+### 3.3 ADVANCED
+
+#### 3.3.1 Strict mode (safer scripts)
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+IFS=$'\n\t'
+```
+
+- `set -e` — exit immediately on any command failure.
+- `set -u` — error on use of unset variables.
+- `set -o pipefail` — a pipeline fails if **any** stage fails (not just the last).
+- Restricting `IFS` avoids word-splitting surprises.
+
+This **"unofficial strict mode"** catches a huge class of bugs and is recommended for production scripts.
+
+#### 3.3.2 Traps and cleanup
+
+```bash
+tmpdir=$(mktemp -d)
+cleanup() { rm -rf "$tmpdir"; }
+trap cleanup EXIT             # always clean up on exit
+trap 'echo "Interrupted"; exit 130' INT TERM
+```
+
+`trap` runs a handler on signals/events (EXIT, ERR, INT, TERM) — essential for cleaning up temp files and graceful shutdown.
+
+#### 3.3.3 Error handling patterns
+
+```bash
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+command -v jq >/dev/null || die "jq is required"
+[[ -f "$config" ]] || die "config not found: $config"
+
+# Run with explicit checks even under set -e
+if ! output=$(some_command 2>&1); then
+  die "some_command failed: $output"
+fi
+```
+
+#### 3.3.4 Process substitution and advanced redirection
+
+```bash
+diff <(sort a.txt) <(sort b.txt)        # treat command output as files
+while read -r l; do echo "$l"; done < <(grep x file)   # avoid subshell var loss
+```
+
+> Piping into `while` runs it in a subshell (variables don't persist). Use process substitution `< <(...)` to keep variables.
+
+#### 3.3.5 Parameter expansion mastery
+
+```bash
+${var:-default}     # default if unset/empty
+${var:=default}     # assign default if unset
+${var:?error msg}   # fail if unset
+${var:+alt}         # use alt if set
+${var#pattern}      # remove shortest leading match
+${var##pattern}     # remove longest leading match
+${var%pattern}      # remove shortest trailing match
+${var%%pattern}     # remove longest trailing match
+${var/find/replace} # replace first
+${var//find/replace}# replace all
+${!var}             # indirect expansion
+${var:offset:len}   # substring
+```
+
+#### 3.3.6 Working with text tools
+
+Bash shines when combined with classic tools:
+
+```bash
+grep -E "error|fail" log.txt          # search
+sed 's/old/new/g' file                # stream edit
+awk '{ sum += $1 } END { print sum }' # field processing/math
+cut -d: -f1 /etc/passwd               # extract fields
+sort | uniq -c | sort -rn             # count and rank
+tr 'a-z' 'A-Z'                        # translate
+xargs -n1 -P4 command                 # parallelize
+find . -name "*.log" -mtime +7 -delete
+jq '.items[].name' data.json          # parse JSON (external tool)
+```
+
+#### 3.3.7 Debugging
+
+```bash
+bash -x script.sh         # trace each command as executed
+set -x; ...; set +x       # trace a section
+bash -n script.sh         # syntax check without running
+PS4='+ ${BASH_SOURCE}:${LINENO}: '    # richer trace prefix
+```
+
+Always run **`shellcheck`** — it catches quoting, unset-variable, and portability bugs before runtime.
+
+#### 3.3.8 Robust script template
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+IFS=$'\n\t'
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+log()  { printf '[%s] %s\n' "$(date +%T)" "$*"; }
+die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+usage() { echo "Usage: $0 [-v] <arg>"; exit 1; }
+
+main() {
+  local verbose=0
+  while getopts "v" opt; do
+    case "$opt" in
+      v) verbose=1 ;;
+      *) usage ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+  [[ $# -ge 1 ]] || usage
+
+  local tmp; tmp=$(mktemp)
+  trap 'rm -f "$tmp"' EXIT
+
+  log "Processing $1"
+  # ... work ...
+}
+
+main "$@"
+```
+
+---
+
+## 4. Hands-on Tasks
+
+### Task 1: Write and run a script
+
+Create `greet.sh` with a shebang that prints arguments; `chmod +x` and run with args.
+
+**Expected:** It echoes the arguments you pass.
+
+### Task 2: Use variables and command substitution
+
+Store the current date and a file count in variables and print them.
+
+**Expected:** Correct date and count displayed.
+
+### Task 3: Conditionals on a file
+
+Write a script that checks if a file passed as `$1` exists and is readable.
+
+**Expected:** Prints whether the file exists/readable; exits non-zero if not.
+
+### Task 4: Loop over files
+
+Loop through `*.log` and print each filename and its line count.
+
+**Expected:** One line per file with its `wc -l`.
+
+### Task 5: Write a function
+
+Create a `backup()` function that copies a file to `file.bak`.
+
+**Expected:** A `.bak` copy is created; returns success.
+
+### Task 6: Parse options with getopts
+
+Accept `-v` (verbose) and `-f file`; print parsed values.
+
+**Expected:** Options are parsed correctly; usage shown on bad input.
+
+### Task 7: Use strict mode and a trap
+
+Add `set -euo pipefail` and a `trap` that removes a temp file on exit.
+
+**Expected:** Temp file is cleaned up even if the script errors.
+
+### Task 8: String manipulation
+
+Given a path, extract the basename, directory, and extension using parameter expansion.
+
+**Expected:** Correct components printed without external commands.
+
+### Task 9: Process a file with a while-read loop
+
+Read a CSV line by line and print the first field (use `IFS`).
+
+**Expected:** First column of each row printed.
+
+### Task 10: Lint and debug
+
+Run `shellcheck` on your script and fix warnings; trace with `bash -x`.
+
+**Expected:** ShellCheck passes; trace shows command execution.
+
+---
+
+## 5. Projects
+
+### Project 1 (Beginner): System Info / Backup Script
+
+**Goal:** Automate a routine admin task.
+
+Steps:
+1. Write a script that gathers system info (hostname, uptime, disk, memory).
+2. Add a `backup` mode that tars a directory with a timestamped filename.
+3. Use **functions**, **arguments** (`getopts`), and **conditionals**.
+4. Log actions with timestamps; handle errors with `die`.
+5. Lint with ShellCheck.
+
+**Skills:** variables, functions, args, conditionals, logging.
+
+### Project 2 (Intermediate): Log Analyzer / Rotation Tool
+
+**Goal:** Parse and manage log files.
+
+Steps:
+1. Scan a log directory; count errors/warnings with `grep`/`awk`.
+2. Summarize top error messages (`sort | uniq -c | sort -rn`).
+3. Rotate/compress logs older than N days (`find -mtime`, `gzip`).
+4. Use **arrays**, **strict mode**, **traps**, and parameter expansion.
+5. Send a summary (echo/email) and exit with meaningful codes.
+
+**Skills:** text tools, arrays, error handling, file management.
+
+### Project 3 (Advanced): Deployment / Provisioning Automation
+
+**Goal:** A robust, production-grade automation script.
+
+Steps:
+1. Build a deploy script: pull code, run build, health-check, and roll back on failure.
+2. Use **strict mode**, **traps for cleanup/rollback**, and structured **logging**.
+3. Validate prerequisites (`command -v`), parse rich options (`getopts`), and read config.
+4. Parallelize independent steps (`xargs -P` or background jobs + `wait`).
+5. Add a dry-run mode and idempotency checks.
+6. Integrate into CI; pass **ShellCheck** and include a usage/help.
+
+**Skills:** strict mode, traps/rollback, prerequisites, parallelism, idempotency, CI integration.
+
+---
+
+## 6. Best Practices & Common Pitfalls
+
+### Best Practices
+
+- **Start with `#!/usr/bin/env bash` and `set -euo pipefail`.**
+- **Always quote variables** (`"$var"`, `"$@"`).
+- **Use `[[ ]]`** for tests and `(( ))` for arithmetic.
+- **Use `local`** in functions; return data via stdout.
+- **Use `trap`** to clean up temp files and handle signals.
+- **Validate inputs and prerequisites**; fail fast with clear messages.
+- **Run `shellcheck`** on every script; format with `shfmt`.
+- **Prefer `printf`** over `echo` for predictable output.
+- **Use `mktemp`** for temp files/dirs (never predictable names).
+- **Provide `--help`/usage** and meaningful exit codes.
+- **Avoid parsing `ls`**; use globs/`find`. **Avoid `eval`** unless unavoidable.
+- **Know when to switch to Python** for complex logic.
+
+### Common Pitfalls
+
+| Pitfall | Consequence | Fix |
+|---------|-------------|-----|
+| Unquoted variables | Word-splitting/globbing bugs | Always quote `"$var"` |
+| Spaces around `=` in assignment | Syntax error | `var=value` (no spaces) |
+| Using `[ ]` with strings | Unexpected failures | Use `[[ ]]` |
+| No `set -e`/`pipefail` | Errors silently ignored | Strict mode |
+| Parsing `ls` output | Breaks on odd filenames | Globs / `find -print0` + `xargs -0` |
+| Piping into `while` | Variables lost (subshell) | Process substitution `< <(...)` |
+| Predictable temp filenames | Race/security issues | `mktemp` |
+| Forgetting `chmod +x` | "Permission denied" | Make executable or `bash script.sh` |
+| Integer-only math surprises | Wrong results with decimals | Use `bc`/`awk` for floats |
+| Using `eval` on input | Code injection | Avoid; use arrays/proper quoting |
+
+---
+
+## 7. Interview Questions
+
+### Beginner
+
+1. **What is the shebang and why is it needed?**
+   *The first line (`#!/usr/bin/env bash`) telling the OS which interpreter to run the script with.*
+
+2. **How do you assign and use a variable in Bash?**
+   *`name="value"` (no spaces) and reference with `"$name"` (quoted).*
+
+3. **What does `$?` contain?**
+   *The exit status of the last command (0 = success, non-zero = failure).*
+
+4. **What's the difference between `$@` and `$*`?**
+   *`"$@"` expands arguments as separate quoted words; `"$*"` joins them into a single word.*
+
+5. **How do you make a script executable?**
+   *`chmod +x script.sh`, then run `./script.sh`.*
+
+### Intermediate
+
+6. **Why prefer `[[ ]]` over `[ ]`?**
+   *`[[ ]]` is a Bash keyword that safely handles strings, supports `&&`/`||` and regex `=~`, and avoids many quoting pitfalls of the `[ ]` (test) command.*
+
+7. **How do functions return values in Bash?**
+   *`return` only sets an exit status (0–255); to return data, `echo`/`printf` it to stdout and capture with `$(...)`.*
+
+8. **What does `set -euo pipefail` do?**
+   *`-e` exits on error, `-u` errors on unset variables, and `pipefail` makes a pipeline fail if any stage fails.*
+
+9. **What is command substitution?**
+   *Capturing a command's output into a variable/expression with `$(command)` (preferred) or backticks.*
+
+10. **How do you read a file line by line safely?**
+    *`while IFS= read -r line; do ...; done < file` — `IFS=` preserves whitespace and `-r` prevents backslash mangling.*
+
+### Advanced
+
+11. **What is `trap` used for?**
+    *Registering handlers for signals/events (EXIT, ERR, INT, TERM) to clean up resources or handle interruptions gracefully.*
+
+12. **Why does piping into a `while` loop lose variable changes, and how do you fix it?**
+    *The loop runs in a subshell, so variable changes don't persist; use process substitution `done < <(command)` to keep the loop in the current shell.*
+
+13. **Explain parameter expansion for defaults and error handling.**
+    *`${var:-default}` uses a fallback, `${var:=default}` assigns it, `${var:?msg}` exits with an error if unset, and `${var:+alt}` substitutes only if set.*
+
+14. **How do you strip a file's extension or get its basename without external tools?**
+    *Use parameter expansion: `${file##*/}` for basename, `${file%/*}` for directory, `${file%.*}` to remove the last extension.*
+
+15. **When should you NOT use Bash, and why?**
+    *For complex data structures, floating-point math, structured-data parsing, large applications, or anything needing strong testing/error handling — use Python or another language; Bash gets brittle and hard to maintain at scale.*
+
+---
+
+## 8. Quizzes
+
+### Multiple Choice
+
+**Q1.** The shebang line begins with:
+- A) `##`  B) `#!`  C) `//`  D) `!#`
+
+**Q2.** Which assigns a variable correctly?
+- A) `x = 5`  B) `x=5`  C) `$x=5`  D) `set x 5`
+
+**Q3.** `$?` holds the:
+- A) PID  B) Exit status  C) Argument count  D) Script name
+
+**Q4.** Which is safest for string tests?
+- A) `[ ]`  B) `[[ ]]`  C) `(( ))`  D) `{ }`
+
+**Q5.** `set -o pipefail` makes a pipeline fail when:
+- A) Only the last command fails  B) Any command fails  C) Never  D) The first command fails
+
+**Q6.** Command substitution uses:
+- A) `${}`  B) `$()`  C) `$[]`  D) `@()`
+
+**Q7.** Which expands to all arguments as separate quoted words?
+- A) `$*`  B) `"$@"`  C) `$#`  D) `$!`
+
+**Q8.** Which runs cleanup on script exit?
+- A) `wait`  B) `trap ... EXIT`  C) `exec`  D) `kill`
+
+**Q9.** `${file##*/}` gives the:
+- A) Directory  B) Extension  C) Basename  D) Full path
+
+**Q10.** Which tool lints Bash scripts?
+- A) shfmt  B) shellcheck  C) bashlint  D) lintsh
+
+### Short Answer
+
+**S1.** Write the recommended strict-mode line.
+
+**S2.** How do you provide a default value for an unset variable `NAME`?
+
+**S3.** Which keyword declares a function-local variable?
+
+**S4.** How do you redirect both stdout and stderr to a file?
+
+**S5.** What command creates a safe temporary file?
+
+### Answer Key
+
+**Multiple Choice:** Q1-B, Q2-B, Q3-B, Q4-B, Q5-B, Q6-B, Q7-B, Q8-B, Q9-C, Q10-B
+
+**Short Answer:**
+- **S1.** `set -euo pipefail`.
+- **S2.** `${NAME:-default}`.
+- **S3.** `local`.
+- **S4.** `command > file 2>&1` (or `command &> file`).
+- **S5.** `mktemp`.
+
+---
+
+## 9. Further Resources
+
+### Official Documentation
+- Bash Reference Manual — https://www.gnu.org/software/bash/manual/
+- Bash man page — `man bash`
+
+### Learning
+- Greg's Wiki (BashFAQ/BashGuide/Pitfalls) — https://mywiki.wooledge.org/
+- Bash Hackers Wiki — https://wiki.bash-hackers.org/
+- ShellCheck — https://www.shellcheck.net/
+
+### Tools
+- ShellCheck (linter), shfmt (formatter)
+- `jq` (JSON), `awk`, `sed`, `grep`, `xargs`, `find`
+- bats — Bash Automated Testing System
+
+### Books
+- *The Linux Command Line* — William Shotts (free online)
+- *Classic Shell Scripting* — Robbins & Beebe
+- *bash Cookbook* — Albing, Vossen & Newham
+- *Pro Bash Programming* — Chris Johnson
+
+### Style Guides
+- Google Shell Style Guide — https://google.github.io/styleguide/shellguide.html
+
+---
+
+*End of Bash Scripting — Zero to Hero.*
