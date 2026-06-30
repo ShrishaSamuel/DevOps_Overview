@@ -1,0 +1,775 @@
+# ELK / EFK Stack — Zero to Hero
+
+> A complete, beginner-to-advanced guide to the ELK/EFK Stack (Elasticsearch, Logstash/Fluentd, Kibana, Beats) for centralized logging and search.
+
+---
+
+## Table of Contents
+
+1. [Introduction & Theory](#1-introduction--theory)
+2. [Installation & Setup](#2-installation--setup)
+3. [Core Concepts](#3-core-concepts)
+4. [Hands-on Tasks](#4-hands-on-tasks)
+5. [Projects](#5-projects)
+6. [Best Practices & Common Pitfalls](#6-best-practices--common-pitfalls)
+7. [Interview Questions](#7-interview-questions)
+8. [Quizzes](#8-quizzes)
+9. [Further Resources](#9-further-resources)
+
+---
+
+## 1. Introduction & Theory
+
+### 1.1 What is the ELK/EFK Stack?
+
+The **ELK Stack** is a set of open-source tools for **centralized logging, search, and analytics**, maintained by Elastic. The acronym stands for:
+
+- **E**lasticsearch — distributed search and analytics engine (storage + indexing + query).
+- **L**ogstash — server-side data processing pipeline (ingest, transform, enrich).
+- **K**ibana — visualization and exploration UI.
+
+The **EFK Stack** swaps Logstash for **Fluentd** (or **Fluent Bit**), a lightweight log collector popular in Kubernetes/cloud-native environments. Together with **Beats** (lightweight shippers) the broader family is now called the **Elastic Stack**.
+
+### 1.2 The problem it solves
+
+In distributed systems, logs are scattered across dozens or thousands of containers and servers. SSHing into each to `grep` logs doesn't scale. The ELK/EFK stack **centralizes** all logs into one searchable place, enabling:
+- Fast full-text search across all logs.
+- Real-time dashboards and visualizations.
+- Alerting on log patterns (errors, security events).
+- Correlation across services for debugging and audit.
+
+### 1.3 Logs vs. metrics
+
+| | Logs | Metrics |
+|--|------|---------|
+| Nature | Discrete event records (text/JSON) | Numeric time series |
+| Tool | ELK/EFK, Loki | Prometheus |
+| Use | Detailed context, debugging, audit | Trends, alerting, capacity |
+| Cardinality | High (free-form) | Lower (labeled numbers) |
+
+Logs and metrics are complementary pillars of observability — metrics tell you *something is wrong*, logs tell you *what exactly happened*.
+
+### 1.4 Architecture and data flow
+
+```
+   +----------+    +-----------+    +---------------+    +-------------+    +---------+
+   | Sources  |───►|  Shippers |───►|  Processing   |───►| Elasticsearch|──►| Kibana  |
+   | (apps,   |    | (Beats /  |    | (Logstash /   |    |  (store +    |   | (search,|
+   |  servers,|    |  Fluentd) |    |  Fluentd /    |    |   index +    |   |  viz,   |
+   | k8s pods)|    |           |    |  ingest node) |    |   search)    |   |  alert) |
+   +----------+    +-----------+    +---------------+    +-------------+    +---------+
+                        │  (optional buffer: Kafka / Redis between shipper & processing)
+```
+
+Typical pipeline:
+1. **Sources** generate logs (application logs, syslog, container stdout).
+2. **Shippers** (Filebeat, Fluentd, Fluent Bit) collect and forward them.
+3. **Processing** (Logstash or Elasticsearch ingest pipelines) parses, transforms, and enriches.
+4. **Elasticsearch** stores and indexes the data for fast search.
+5. **Kibana** queries Elasticsearch to visualize, explore, and alert.
+
+A **message queue (Kafka/Redis)** is often inserted as a buffer for resilience and backpressure handling at scale.
+
+### 1.5 Logstash vs. Fluentd (ELK vs. EFK)
+
+| Aspect | Logstash | Fluentd / Fluent Bit |
+|--------|----------|----------------------|
+| Language | JRuby (JVM) | C/Ruby (Fluent Bit is C) |
+| Resource use | Heavier | Lightweight (Fluent Bit very light) |
+| Ecosystem | Rich filters/plugins | CNCF project, K8s-native |
+| Best for | Complex transformations | Cloud-native/Kubernetes log collection |
+
+Many setups use **Beats/Fluent Bit** for shipping + lightweight parsing and reserve Logstash for heavy transformation.
+
+### 1.6 Beats
+
+**Beats** are single-purpose, lightweight data shippers:
+- **Filebeat** — log files.
+- **Metricbeat** — metrics.
+- **Packetbeat** — network data.
+- **Winlogbeat** — Windows event logs.
+- **Auditbeat** — audit data.
+- **Heartbeat** — uptime monitoring.
+
+### 1.7 When to use ELK/EFK
+
+- Centralized log aggregation across many services/hosts.
+- Full-text search and ad-hoc log exploration.
+- Security analytics / SIEM, audit trails.
+- Real-time dashboards on log-derived data.
+
+When **not** ideal: simple/low-volume setups (overkill; Elasticsearch is resource-hungry), pure metrics (use Prometheus), or when a lighter log system suffices (Grafana Loki indexes labels not full text and is cheaper for some workloads).
+
+---
+
+## 2. Installation & Setup
+
+### 2.1 Docker Compose (single-node dev stack)
+
+```yaml
+# docker-compose.yml
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false       # dev only!
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    ports: ["9200:9200"]
+    volumes: ["esdata:/usr/share/elasticsearch/data"]
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.14.0
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports: ["5601:5601"]
+    depends_on: [elasticsearch]
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.14.0
+    volumes:
+      - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+    ports: ["5044:5044"]
+    depends_on: [elasticsearch]
+
+volumes:
+  esdata:
+```
+
+```bash
+# Linux requires raising the mmap limit for Elasticsearch
+sudo sysctl -w vm.max_map_count=262144
+docker compose up -d
+```
+
+### 2.2 Verify the stack
+
+```bash
+curl http://localhost:9200                  # Elasticsearch info JSON
+curl http://localhost:9200/_cluster/health?pretty
+# Kibana UI: http://localhost:5601
+```
+
+**Expected:** Elasticsearch returns version JSON; cluster health is `green` or `yellow` (yellow is normal single-node).
+
+### 2.3 Minimal Logstash pipeline
+
+```ruby
+# logstash.conf
+input {
+  beats { port => 5044 }
+}
+filter {
+  grok {
+    match => { "message" => "%{COMBINEDAPACHELOG}" }
+  }
+  date {
+    match => [ "timestamp", "dd/MMM/yyyy:HH:mm:ss Z" ]
+  }
+}
+output {
+  elasticsearch {
+    hosts => ["http://elasticsearch:9200"]
+    index => "logs-%{+YYYY.MM.dd}"
+  }
+}
+```
+
+### 2.4 Filebeat (ship logs)
+
+```yaml
+# filebeat.yml
+filebeat.inputs:
+  - type: filestream
+    paths:
+      - /var/log/*.log
+output.logstash:
+  hosts: ["localhost:5044"]
+# Or ship directly to Elasticsearch:
+# output.elasticsearch:
+#   hosts: ["http://localhost:9200"]
+```
+
+```bash
+filebeat -e -c filebeat.yml
+```
+
+---
+
+## 3. Core Concepts
+
+### 3.1 BEGINNER
+
+#### 3.1.1 Elasticsearch fundamentals
+
+| Term | Meaning |
+|------|---------|
+| **Document** | A single JSON record (e.g., one log line) |
+| **Index** | A collection of documents (like a database table) |
+| **Field** | A key in a document |
+| **Mapping** | The schema defining field types for an index |
+| **Shard** | A horizontal partition of an index (enables scaling) |
+| **Replica** | A copy of a shard (HA + read scaling) |
+| **Node** | A single Elasticsearch instance |
+| **Cluster** | A group of nodes working together |
+
+#### 3.1.2 Documents and indexing
+
+```bash
+# Index (create) a document
+curl -X POST "localhost:9200/myindex/_doc" -H 'Content-Type: application/json' -d '{
+  "level": "ERROR",
+  "service": "api",
+  "message": "Database connection failed",
+  "@timestamp": "2026-06-30T10:00:00Z"
+}'
+
+# Get a document by ID
+curl "localhost:9200/myindex/_doc/<id>?pretty"
+
+# List indices
+curl "localhost:9200/_cat/indices?v"
+```
+
+#### 3.1.3 Basic search
+
+```bash
+# Match all
+curl "localhost:9200/myindex/_search?pretty"
+
+# Query string
+curl "localhost:9200/myindex/_search?q=level:ERROR&pretty"
+
+# Query DSL (JSON)
+curl -X GET "localhost:9200/myindex/_search?pretty" -H 'Content-Type: application/json' -d '{
+  "query": {
+    "match": { "message": "connection failed" }
+  }
+}'
+```
+
+#### 3.1.4 Inverted index (why search is fast)
+
+Elasticsearch builds an **inverted index**: instead of scanning documents, it maps each term → the list of documents containing it (like a book index). This makes full-text search across millions of logs near-instant.
+
+```
+Term         → Documents
+"error"      → [doc1, doc5, doc8]
+"connection" → [doc1, doc3]
+"timeout"    → [doc5, doc9]
+```
+
+#### 3.1.5 Kibana basics
+
+- **Data View (Index Pattern):** tells Kibana which indices to query (e.g., `logs-*`).
+- **Discover:** search and browse raw log documents.
+- **Visualizations:** charts/tables built from queries.
+- **Dashboards:** collections of visualizations.
+
+Create a data view: **Stack Management → Data Views → Create** → pattern `logs-*` → time field `@timestamp`.
+
+### 3.2 INTERMEDIATE
+
+#### 3.2.1 Query DSL
+
+```json
+// Boolean query: must, should, must_not, filter
+{
+  "query": {
+    "bool": {
+      "must":     [ { "match": { "service": "api" } } ],
+      "filter":   [ { "term":  { "level": "ERROR" } },
+                    { "range": { "@timestamp": { "gte": "now-1h" } } } ],
+      "must_not": [ { "match": { "message": "healthcheck" } } ],
+      "should":   [ { "match": { "message": "timeout" } } ]
+    }
+  }
+}
+```
+
+- **must** — must match (affects score).
+- **filter** — must match (no scoring, cacheable — faster).
+- **should** — boosts score if matched.
+- **must_not** — excludes.
+
+Query types: `match` (full-text, analyzed), `term` (exact, not analyzed), `range`, `wildcard`, `prefix`, `match_phrase`, `multi_match`.
+
+#### 3.2.2 Mappings and field types
+
+```json
+// Explicit mapping
+PUT /logs
+{
+  "mappings": {
+    "properties": {
+      "@timestamp": { "type": "date" },
+      "level":      { "type": "keyword" },   // exact match, aggregations
+      "message":    { "type": "text" },      // full-text searchable
+      "status":     { "type": "integer" },
+      "service":    { "type": "keyword" }
+    }
+  }
+}
+```
+
+> **`text` vs `keyword`:** `text` is analyzed (tokenized) for full-text search; `keyword` is stored verbatim for exact matches, sorting, and aggregations. Many string fields are indexed as both (`message` + `message.keyword`).
+
+#### 3.2.3 Aggregations
+
+Aggregations summarize data (the analytics engine):
+
+```json
+{
+  "size": 0,
+  "aggs": {
+    "errors_by_service": {
+      "terms": { "field": "service" },
+      "aggs": {
+        "over_time": {
+          "date_histogram": { "field": "@timestamp", "fixed_interval": "1h" }
+        }
+      }
+    }
+  }
+}
+```
+
+Types: **bucket** (terms, date_histogram, range), **metric** (avg, sum, min, max, percentiles, cardinality), and nested combinations.
+
+#### 3.2.4 Logstash filters
+
+```ruby
+filter {
+  grok { match => { "message" => "%{TIMESTAMP_ISO8601:ts} %{LOGLEVEL:level} %{GREEDYDATA:msg}" } }
+  date { match => ["ts", "ISO8601"] }
+  mutate {
+    remove_field => ["host", "agent"]
+    convert => { "status" => "integer" }
+  }
+  geoip { source => "client_ip" }
+  if [level] == "DEBUG" { drop {} }      # discard noisy logs
+}
+```
+
+Key filters: **grok** (parse unstructured text into fields), **mutate** (rename/convert/remove), **date** (parse timestamps), **json** (parse JSON), **geoip** (enrich IPs), **drop** (discard).
+
+#### 3.2.5 Index lifecycle and templates
+
+- **Index templates** apply mappings/settings to indices matching a pattern (`logs-*`).
+- **Index Lifecycle Management (ILM)** automates moving indices through phases: **Hot → Warm → Cold → Frozen → Delete** to manage cost and performance.
+
+```json
+// ILM policy concept
+Hot   (active writes, fast SSD)  → roll over at 50GB or 1 day
+Warm  (read-only, less resource) → after 7 days
+Cold  (rarely accessed)          → after 30 days
+Delete                           → after 90 days
+```
+
+#### 3.2.6 KQL (Kibana Query Language)
+
+In Discover/dashboards:
+
+```
+level: "ERROR" and service: "api"
+status >= 500
+message: *timeout*
+not message: "healthcheck"
+@timestamp >= "2026-06-01"
+```
+
+### 3.3 ADVANCED
+
+#### 3.3.1 Cluster architecture and node roles
+
+| Node role | Responsibility |
+|-----------|---------------|
+| **Master** | Cluster-wide actions (create/delete index, track nodes) |
+| **Data** | Store shards, execute queries (hot/warm/cold tiers) |
+| **Ingest** | Run ingest pipelines (preprocess docs) |
+| **Coordinating** | Route requests, gather results |
+| **ML** | Machine learning jobs (Elastic feature) |
+
+Production clusters use **3 dedicated master-eligible nodes** (quorum) and separate data/ingest nodes.
+
+#### 3.3.2 Sharding and replication strategy
+
+- **Primary shards** split an index for horizontal scale (set at creation, hard to change later).
+- **Replica shards** provide HA and read throughput.
+- **Avoid oversharding** — too many small shards waste resources. Aim for shards roughly 10–50 GB. Use ILM rollover to control shard size.
+
+```json
+PUT /logs-000001
+{
+  "settings": { "number_of_shards": 3, "number_of_replicas": 1 }
+}
+```
+
+#### 3.3.3 EFK on Kubernetes
+
+```
+   Pods (stdout/stderr) ──► Fluent Bit/Fluentd (DaemonSet, one per node)
+        │ enrich with k8s metadata (namespace, pod, labels)
+        ▼
+   Elasticsearch (StatefulSet) ──► Kibana
+```
+
+Fluent Bit/Fluentd run as a **DaemonSet**, tail container logs from `/var/log/containers`, enrich with Kubernetes metadata, and ship to Elasticsearch. Often deployed via Helm (e.g., ECK Operator + fluent-bit chart).
+
+#### 3.3.4 Ingest pipelines (alternative to Logstash)
+
+Elasticsearch can preprocess documents without Logstash:
+
+```json
+PUT /_ingest/pipeline/log-pipeline
+{
+  "processors": [
+    { "grok": { "field": "message", "patterns": ["%{LOGLEVEL:level} %{GREEDYDATA:msg}"] } },
+    { "date": { "field": "ts", "formats": ["ISO8601"] } },
+    { "remove": { "field": "ts" } }
+  ]
+}
+```
+
+Beats can target this pipeline directly — lighter than running Logstash.
+
+#### 3.3.5 Security
+
+- Enable **X-Pack security** (TLS, auth) — never run production without it.
+- **RBAC:** roles, users, API keys; restrict index access.
+- **TLS** for node-to-node and client traffic.
+- Use **Kibana Spaces** for multi-tenancy.
+- Audit logging; network isolation; don't expose 9200 publicly.
+
+```yaml
+# elasticsearch.yml (production)
+xpack.security.enabled: true
+xpack.security.transport.ssl.enabled: true
+xpack.security.http.ssl.enabled: true
+```
+
+#### 3.3.6 Performance tuning
+
+- Size JVM heap to ~50% of RAM, max ~31 GB (compressed oops).
+- Use SSDs for hot data; tier with ILM.
+- Bulk index (use the `_bulk` API) rather than single-doc indexing.
+- Tune `refresh_interval` (e.g., `30s`) for heavy ingest.
+- Right-size shards; avoid mapping explosions (limit dynamic fields).
+- Use **data streams** for time-series/append-only log data.
+
+#### 3.3.7 Alerting and SIEM
+
+- **Kibana Alerting / Watcher** — trigger actions on query conditions (e.g., spike in 5xx logs → email/Slack/PagerDuty).
+- **Elastic Security (SIEM)** — detection rules, threat hunting on log data.
+- **ML anomaly detection** — automatically flag unusual log patterns.
+
+#### 3.3.8 Data streams and rollover
+
+**Data streams** abstract a set of time-based backing indices behind a single name (`logs-app-default`), automatically rolling over and applying ILM — the modern way to handle append-only logs/metrics.
+
+---
+
+## 4. Hands-on Tasks
+
+### Task 1: Start the stack and check health
+
+```bash
+sudo sysctl -w vm.max_map_count=262144
+docker compose up -d
+curl localhost:9200/_cluster/health?pretty
+```
+
+**Expected:** Status `green`/`yellow`, all nodes counted.
+
+### Task 2: Index and retrieve a document
+
+```bash
+curl -X POST "localhost:9200/test/_doc" -H 'Content-Type: application/json' \
+  -d '{"level":"INFO","message":"hello elk","@timestamp":"2026-06-30T10:00:00Z"}'
+curl "localhost:9200/test/_search?pretty"
+```
+
+**Expected:** The document is returned in search hits.
+
+### Task 3: Create a data view in Kibana
+
+Kibana → Stack Management → Data Views → create `test*` (or `logs-*`), time field `@timestamp`.
+
+**Expected:** Documents visible in **Discover**.
+
+### Task 4: Search with Query DSL
+
+```bash
+curl -X GET "localhost:9200/test/_search?pretty" -H 'Content-Type: application/json' -d '{
+  "query": { "match": { "message": "elk" } }
+}'
+```
+
+**Expected:** Matching documents returned with relevance scores.
+
+### Task 5: Ship logs with Filebeat
+
+Configure `filebeat.yml` to read a log file and output to Elasticsearch; generate some lines.
+
+**Expected:** A `filebeat-*` index appears; logs searchable in Kibana.
+
+### Task 6: Parse logs with a grok filter
+
+Use the Logstash pipeline (section 3.2.4) on Apache-style logs.
+
+**Expected:** Raw lines become structured fields (status, method, response time).
+
+### Task 7: Build a Kibana visualization
+
+In Kibana → Visualize → create a bar chart of count by `level` (or `service`).
+
+**Expected:** A chart showing log counts per level.
+
+### Task 8: Create a dashboard
+
+Combine multiple visualizations (errors over time, top services, status codes) into a dashboard.
+
+**Expected:** A single operational logging dashboard.
+
+### Task 9: Run an aggregation
+
+```bash
+curl -X GET "localhost:9200/logs-*/_search?pretty" -H 'Content-Type: application/json' -d '{
+  "size": 0,
+  "aggs": { "by_level": { "terms": { "field": "level" } } }
+}'
+```
+
+**Expected:** Counts grouped by log level.
+
+### Task 10: Set an ILM policy
+
+Create an ILM policy (rollover at 1 day/50GB, delete after 30 days) and attach it to an index template `logs-*`.
+
+**Expected:** Indices roll over and age out automatically.
+
+---
+
+## 5. Projects
+
+### Project 1 (Beginner): Centralized Logging for a Web Server
+
+**Goal:** Aggregate and explore nginx/Apache logs.
+
+Steps:
+1. Stand up ELK via Docker Compose.
+2. Ship access/error logs with **Filebeat**.
+3. Parse them with **grok** (or the Filebeat nginx module) into structured fields.
+4. Create a Kibana data view and explore in Discover.
+5. Build visualizations: requests over time, top URLs, status code breakdown.
+
+**Skills:** Filebeat, grok parsing, data views, visualizations.
+
+### Project 2 (Intermediate): Multi-Service Application Logging
+
+**Goal:** Centralize JSON logs from multiple microservices with dashboards and alerts.
+
+Steps:
+1. Have services emit **structured JSON logs**.
+2. Ship via Filebeat → Logstash (or ingest pipeline) with parsing/enrichment (geoip, field conversion).
+3. Define explicit **mappings** and an **index template**.
+4. Build dashboards: error rate per service, latency percentiles, top errors.
+5. Configure **Kibana alerting** for error spikes (notify Slack/email).
+6. Add **ILM** for retention/cost control.
+
+**Skills:** structured logging, Logstash filters, mappings, dashboards, alerting, ILM.
+
+### Project 3 (Advanced): Production EFK on Kubernetes (with Security & Scale)
+
+**Goal:** A scalable, secure, cluster-wide logging platform.
+
+Steps:
+1. Deploy Elasticsearch (multi-node, dedicated master/data) via the **ECK Operator** or Helm.
+2. Run **Fluent Bit/Fluentd as a DaemonSet** collecting all pod logs + K8s metadata.
+3. Use **data streams + ILM** with hot/warm/cold tiers on appropriate storage.
+4. Enable **security**: TLS everywhere, RBAC, API keys, Kibana Spaces for tenants.
+5. Add a **Kafka buffer** for resilience/backpressure at high volume.
+6. Configure **alerting/SIEM** detection rules and ML anomaly detection.
+7. Tune shards/heap/bulk settings; monitor the cluster's own health.
+
+**Skills:** EFK on K8s, clustering, ILM tiers, security/RBAC, buffering, SIEM, performance tuning.
+
+---
+
+## 6. Best Practices & Common Pitfalls
+
+### Best Practices
+
+- **Use structured (JSON) logs** at the source — far easier than grok-parsing free text.
+- **Define explicit mappings** and index templates; avoid uncontrolled dynamic mapping.
+- **Use `keyword` for exact/aggregatable fields**, `text` for full-text search.
+- **Right-size shards** (~10–50 GB); avoid oversharding.
+- **Use ILM + data streams** to automate rollover, tiering, and deletion.
+- **Bulk index** and tune `refresh_interval` for high ingest.
+- **Enable security** (TLS, auth, RBAC) — never expose Elasticsearch openly.
+- **Add a buffer (Kafka/Redis)** for high-volume resilience.
+- **Set JVM heap ≤ 31 GB**, ~50% of RAM.
+- **Drop noisy logs** (debug/healthchecks) early in the pipeline.
+- **Monitor the stack itself** (cluster health, disk, heap).
+
+### Common Pitfalls
+
+| Pitfall | Consequence | Fix |
+|---------|-------------|-----|
+| Exposing ES on 9200 publicly | Data breach / ransom | Enable security, firewall, never expose |
+| No mappings (dynamic only) | Mapping explosions, wrong types | Explicit mappings + templates |
+| Oversharding | Wasted memory, slow cluster | Fewer, larger shards; ILM rollover |
+| Heap > 31 GB | Loses compressed pointers, GC issues | Cap heap at ~31 GB |
+| Parsing free text with fragile grok | Brittle pipelines | Emit structured JSON |
+| No retention/ILM | Disk fills, cluster red | ILM with delete phase |
+| Single-doc indexing at scale | Poor throughput | Use `_bulk` API |
+| `text` field used for aggregations | Errors / fielddata blowup | Use `keyword` subfield |
+| `vm.max_map_count` too low | ES won't start | `sysctl -w vm.max_map_count=262144` |
+| No buffer at high volume | Log loss on spikes | Kafka/Redis buffer |
+
+---
+
+## 7. Interview Questions
+
+### Beginner
+
+1. **What does ELK stand for?**
+   *Elasticsearch, Logstash, Kibana.*
+
+2. **What is the difference between ELK and EFK?**
+   *EFK replaces Logstash with Fluentd/Fluent Bit — lighter, cloud-native log collectors common in Kubernetes.*
+
+3. **What is Elasticsearch?**
+   *A distributed search and analytics engine that stores, indexes, and searches JSON documents.*
+
+4. **What is an index in Elasticsearch?**
+   *A collection of related JSON documents (roughly like a database table).*
+
+5. **What is Kibana used for?**
+   *Searching, visualizing, and building dashboards/alerts on data stored in Elasticsearch.*
+
+### Intermediate
+
+6. **What is an inverted index?**
+   *A data structure mapping each term to the documents containing it, enabling fast full-text search.*
+
+7. **What is the difference between `text` and `keyword` field types?**
+   *`text` is analyzed/tokenized for full-text search; `keyword` is stored exactly for filtering, sorting, and aggregations.*
+
+8. **What is grok in Logstash?**
+   *A filter that parses unstructured log text into structured fields using named regex patterns.*
+
+9. **What are shards and replicas?**
+   *Shards are horizontal partitions of an index for scale; replicas are copies of shards for high availability and read throughput.*
+
+10. **What is the difference between `must` and `filter` in a bool query?**
+    *Both must match; `must` contributes to relevance scoring, while `filter` does not (and is cacheable, hence faster).*
+
+### Advanced
+
+11. **How does ILM help manage log data?**
+    *Index Lifecycle Management automates rolling indices through hot/warm/cold/frozen/delete phases based on age/size, optimizing cost and performance.*
+
+12. **How would you design an EFK pipeline for Kubernetes?**
+    *Run Fluent Bit/Fluentd as a DaemonSet to tail container logs, enrich with K8s metadata, ship to a multi-node Elasticsearch (with data streams + ILM), visualize in Kibana, secured with TLS/RBAC, optionally buffered by Kafka.*
+
+13. **Why cap Elasticsearch heap at ~31 GB?**
+    *Above ~32 GB the JVM loses compressed ordinary object pointers (compressed oops), wasting memory and hurting performance; heap should be ~50% of RAM and ≤ 31 GB.*
+
+14. **How do you prevent and handle mapping explosions?**
+    *Use explicit mappings and templates, disable/limit dynamic mapping, avoid indexing unbounded fields, and set field limits.*
+
+15. **How would you make the logging pipeline resilient at high volume?**
+    *Insert a buffer (Kafka/Redis) between shippers and processing, use bulk indexing, tune refresh intervals, scale data nodes, and apply backpressure-aware shippers (Fluent Bit/Beats).*
+
+---
+
+## 8. Quizzes
+
+### Multiple Choice
+
+**Q1.** What does the "E" in ELK stand for?
+- A) Events  B) Elasticsearch  C) Engine  D) Elastic
+
+**Q2.** EFK replaces Logstash with:
+- A) Filebeat  B) Fluentd/Fluent Bit  C) Kafka  D) Grafana
+
+**Q3.** A single JSON record in Elasticsearch is a:
+- A) Index  B) Shard  C) Document  D) Field
+
+**Q4.** Which field type is used for exact match and aggregations?
+- A) text  B) keyword  C) string  D) analyzed
+
+**Q5.** What data structure makes full-text search fast?
+- A) B-tree  B) Inverted index  C) Hash map  D) Heap
+
+**Q6.** Which Logstash filter parses unstructured text?
+- A) mutate  B) date  C) grok  D) drop
+
+**Q7.** What provides high availability for shards?
+- A) Replicas  B) Mappings  C) Templates  D) Ingest nodes
+
+**Q8.** Which manages index aging (hot/warm/cold/delete)?
+- A) KQL  B) ILM  C) Beats  D) Watcher
+
+**Q9.** Which tool visualizes Elasticsearch data?
+- A) Logstash  B) Filebeat  C) Kibana  D) Fluentd
+
+**Q10.** Recommended max Elasticsearch JVM heap is about:
+- A) 8 GB  B) 16 GB  C) 31 GB  D) 64 GB
+
+### Short Answer
+
+**S1.** What sysctl setting must be raised for Elasticsearch to start on Linux?
+
+**S2.** Name the modern abstraction over time-based backing indices for append-only logs.
+
+**S3.** Which Kibana object defines which indices to query?
+
+**S4.** In a bool query, which clause matches without affecting relevance score?
+
+**S5.** What API should you use for high-throughput indexing?
+
+### Answer Key
+
+**Multiple Choice:** Q1-B, Q2-B, Q3-C, Q4-B, Q5-B, Q6-C, Q7-A, Q8-B, Q9-C, Q10-C
+
+**Short Answer:**
+- **S1.** `vm.max_map_count=262144`
+- **S2.** **Data streams**.
+- **S3.** A **Data View** (formerly Index Pattern).
+- **S4.** The **filter** clause.
+- **S5.** The **`_bulk`** API.
+
+---
+
+## 9. Further Resources
+
+### Official Documentation
+- Elastic Stack docs — https://www.elastic.co/guide/index.html
+- Elasticsearch reference — https://www.elastic.co/guide/en/elasticsearch/reference/current/index.html
+- Logstash — https://www.elastic.co/guide/en/logstash/current/index.html
+- Kibana — https://www.elastic.co/guide/en/kibana/current/index.html
+- Fluentd — https://docs.fluentd.org / Fluent Bit — https://docs.fluentbit.io
+
+### Learning
+- Elastic free training — https://www.elastic.co/training/
+- "Getting started with the Elastic Stack" tutorials
+- ECK (Elastic Cloud on Kubernetes) — https://www.elastic.co/guide/en/cloud-on-k8s/current/
+
+### Tools & Ecosystem
+- Beats (Filebeat, Metricbeat, etc.)
+- Kafka/Redis (buffering), ECK Operator
+- Grafana Loki (lighter logging alternative)
+
+### Books
+- *Elasticsearch: The Definitive Guide* — Gormley & Tong
+- *Relevant Search* — Doug Turnbull & John Berryman
+- *Learning Elastic Stack* — Pranav Shukla & Sharath Kumar
+
+### Certifications
+- Elastic Certified Engineer / Analyst
+
+---
+
+*End of ELK / EFK Stack — Zero to Hero.*
