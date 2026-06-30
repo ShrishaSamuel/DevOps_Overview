@@ -1,0 +1,736 @@
+# GitLab CI/CD — Zero to Hero
+
+> A complete, beginner-to-advanced guide to GitLab CI/CD for continuous integration and delivery.
+
+---
+
+## Table of Contents
+
+1. [Introduction & Theory](#1-introduction--theory)
+2. [Installation & Setup](#2-installation--setup)
+3. [Core Concepts](#3-core-concepts)
+4. [Hands-on Tasks](#4-hands-on-tasks)
+5. [Projects](#5-projects)
+6. [Best Practices & Common Pitfalls](#6-best-practices--common-pitfalls)
+7. [Interview Questions](#7-interview-questions)
+8. [Quizzes](#8-quizzes)
+9. [Further Resources](#9-further-resources)
+
+---
+
+## 1. Introduction & Theory
+
+### 1.1 What is GitLab CI/CD?
+
+**GitLab CI/CD** is the built-in continuous integration and delivery system of **GitLab**, a complete DevOps platform. It automates building, testing, and deploying code through pipelines defined in a single YAML file — **`.gitlab-ci.yml`** — stored in your repository. Because GitLab unifies source control, CI/CD, container registry, security scanning, and issue tracking in one application, it's often described as a "single application for the entire DevOps lifecycle."
+
+### 1.2 Why GitLab CI/CD?
+
+| Feature | Explanation |
+|---------|-------------|
+| **All-in-one** | SCM + CI/CD + registry + security + monitoring in one platform |
+| **Pipeline-as-code** | `.gitlab-ci.yml` versioned with the code |
+| **Runners** | Flexible execution: shared, group, or self-hosted, on any OS/container |
+| **Auto DevOps** | Opinionated, zero-config pipelines |
+| **Built-in security** | SAST, DAST, dependency & container scanning out of the box |
+| **Self-hostable** | Run your own GitLab instance or use GitLab.com SaaS |
+| **Environments & reviews** | Built-in deploy environments and review apps |
+
+### 1.3 How it works
+
+```
+   Commit / MR / schedule
+        │ triggers
+        ▼
+   Pipeline  (.gitlab-ci.yml)
+        │ organized into ordered
+        ▼
+   Stages  (build → test → deploy)   [run sequentially]
+        │ each stage contains
+        ▼
+   Jobs   [run in parallel within a stage]
+        │ executed by a
+        ▼
+   Runner  (shell, Docker, Kubernetes executor)
+```
+
+- **Pipeline:** The top-level CI/CD process, triggered by events.
+- **Stage:** A phase of the pipeline (e.g., `build`, `test`, `deploy`). Stages run **in order**.
+- **Job:** A unit of work in a stage. Jobs in the **same stage run in parallel**.
+- **Runner:** An agent that executes jobs. GitLab.com provides shared runners; you can register your own.
+- **Executor:** How a runner runs jobs — Shell, Docker, Docker Machine, or Kubernetes.
+
+### 1.4 Architecture
+
+```
+   GitLab Server (gitlab.com or self-hosted)
+        │ assigns jobs
+        ▼
+   +------------------+   +------------------+   +------------------+
+   | Shared Runner    |   | Group Runner     |   | Self-hosted      |
+   | (Docker executor)|   | (K8s executor)   |   | (Shell executor) |
+   +------------------+   +------------------+   +------------------+
+        │ pulls job, runs script, reports status + artifacts back
+        ▼
+   Artifacts, container images (registry), environments, security reports
+```
+
+### 1.5 When to use GitLab CI/CD
+
+- Teams already on GitLab (SaaS or self-managed).
+- Wanting an integrated DevOps platform (less tool sprawl).
+- Needing self-hosted/on-prem CI with strong security scanning.
+- GitOps and Kubernetes deployments (GitLab Agent for Kubernetes).
+
+When **not** ideal: code hosted on GitHub (use GitHub Actions), or very lightweight needs where a hosted SaaS CI is simpler.
+
+---
+
+## 2. Installation & Setup
+
+### 2.1 Using GitLab.com (no install)
+
+Sign up at https://gitlab.com, create a project, and add a `.gitlab-ci.yml` — shared runners execute it automatically.
+
+### 2.2 Self-hosted GitLab (Docker)
+
+```bash
+docker run -d --name gitlab \
+  --hostname gitlab.example.com \
+  -p 80:80 -p 443:443 -p 22:22 \
+  -v gitlab_config:/etc/gitlab \
+  -v gitlab_logs:/var/log/gitlab \
+  -v gitlab_data:/var/opt/gitlab \
+  gitlab/gitlab-ce:latest
+```
+
+### 2.3 Register a runner (self-hosted)
+
+```bash
+# Install GitLab Runner
+curl -L "https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh" | sudo bash
+sudo apt install -y gitlab-runner
+
+# Register (get token from Project → Settings → CI/CD → Runners)
+sudo gitlab-runner register \
+  --url https://gitlab.com/ \
+  --registration-token <TOKEN> \
+  --executor docker \
+  --docker-image alpine:latest \
+  --description "docker-runner"
+```
+
+### 2.4 Your first pipeline
+
+Create `.gitlab-ci.yml` in the repo root:
+
+```yaml
+stages:
+  - build
+  - test
+
+build-job:
+  stage: build
+  script:
+    - echo "Compiling the code..."
+    - echo "Build complete."
+
+test-job:
+  stage: test
+  script:
+    - echo "Running tests..."
+    - echo "All tests passed."
+```
+
+Commit and push — the pipeline runs automatically. View under **Build → Pipelines**.
+
+---
+
+## 3. Core Concepts
+
+### 3.1 BEGINNER
+
+#### 3.1.1 Stages and jobs
+
+```yaml
+stages:            # defines order
+  - build
+  - test
+  - deploy
+
+compile:
+  stage: build
+  script: [ "make build" ]
+
+unit-tests:
+  stage: test
+  script: [ "make test" ]
+
+lint:
+  stage: test          # runs in parallel with unit-tests
+  script: [ "make lint" ]
+
+deploy-prod:
+  stage: deploy
+  script: [ "./deploy.sh" ]
+```
+
+If a job fails, later stages don't run (by default).
+
+#### 3.1.2 The script keyword
+
+```yaml
+job:
+  before_script:
+    - echo "setup"
+  script:
+    - echo "main commands"
+    - npm ci
+    - npm test
+  after_script:
+    - echo "cleanup (always runs)"
+```
+
+#### 3.1.3 Choosing an image
+
+Each job can run in a specific Docker image (with the Docker executor):
+
+```yaml
+test:
+  image: node:20-alpine
+  script:
+    - node --version
+    - npm ci && npm test
+```
+
+#### 3.1.4 Variables
+
+```yaml
+variables:
+  APP_ENV: production       # pipeline-level
+
+job:
+  variables:
+    JOB_VAR: value          # job-level
+  script:
+    - echo "$APP_ENV - $JOB_VAR"
+    - echo "Branch: $CI_COMMIT_REF_NAME"
+    - echo "Commit: $CI_COMMIT_SHA"
+```
+
+GitLab provides many **predefined variables** (`CI_COMMIT_SHA`, `CI_PIPELINE_ID`, `CI_PROJECT_DIR`, `CI_REGISTRY`, etc.).
+
+#### 3.1.5 Pipeline status
+
+Pipelines show in the UI with stage/job graphs. Merge requests display pipeline status and can be set to require a green pipeline before merging.
+
+### 3.2 INTERMEDIATE
+
+#### 3.2.1 Artifacts
+
+```yaml
+build:
+  stage: build
+  script:
+    - npm run build
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+    reports:
+      junit: test-results.xml    # special report types render in MR
+```
+
+Artifacts pass files to later stages and are downloadable from the UI.
+
+#### 3.2.2 Caching
+
+```yaml
+cache:
+  key: ${CI_COMMIT_REF_SLUG}     # per-branch cache
+  paths:
+    - node_modules/
+    - .npm/
+
+job:
+  cache:
+    key:
+      files: [ package-lock.json ]
+    paths: [ node_modules/ ]
+```
+
+> **Cache vs. artifacts:** cache speeds up builds (dependencies, not guaranteed to persist); artifacts are deliverables passed reliably between jobs.
+
+#### 3.2.3 Rules and conditions
+
+```yaml
+deploy-prod:
+  stage: deploy
+  script: [ "./deploy.sh" ]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual                    # require a click to deploy
+    - if: '$CI_COMMIT_TAG'
+      when: on_success
+    - when: never                     # otherwise don't run
+```
+
+`rules` (modern) replace the older `only`/`except`. Conditions can match branches, tags, MRs, variables, and changed files (`changes:`).
+
+#### 3.2.4 `needs` (DAG pipelines)
+
+```yaml
+build-a:
+  stage: build
+  script: [ "make a" ]
+
+test-a:
+  stage: test
+  needs: [ build-a ]      # start as soon as build-a finishes, not whole stage
+  script: [ "make test-a" ]
+```
+
+`needs` creates a **directed acyclic graph**, letting jobs start early instead of waiting for an entire stage — faster pipelines.
+
+#### 3.2.5 Environments and deployments
+
+```yaml
+deploy-staging:
+  stage: deploy
+  script: [ "./deploy.sh staging" ]
+  environment:
+    name: staging
+    url: https://staging.example.com
+
+deploy-prod:
+  stage: deploy
+  script: [ "./deploy.sh production" ]
+  environment:
+    name: production
+    url: https://example.com
+  when: manual
+```
+
+Environments track deployments, enable rollback, and power **review apps** (ephemeral environments per merge request).
+
+#### 3.2.6 CI/CD variables and secrets
+
+Define under **Settings → CI/CD → Variables**:
+- **Protected** — only available on protected branches/tags.
+- **Masked** — hidden in job logs.
+- **File** type — written to a temp file (for certs/keys).
+
+```yaml
+deploy:
+  script:
+    - echo "$DEPLOY_TOKEN" | docker login -u ci --password-stdin
+```
+
+#### 3.2.7 Services
+
+```yaml
+test:
+  image: python:3.12
+  services:
+    - postgres:16
+  variables:
+    POSTGRES_PASSWORD: pass
+    DATABASE_URL: "postgres://postgres:pass@postgres:5432/test"
+  script:
+    - pytest
+```
+
+Service containers (databases, redis) run alongside the job and are reachable by service name.
+
+### 3.3 ADVANCED
+
+#### 3.3.1 Templates: extends, include, anchors
+
+```yaml
+# Reuse with extends
+.base-test:
+  image: node:20
+  before_script: [ "npm ci" ]
+
+unit:
+  extends: .base-test
+  script: [ "npm run test:unit" ]
+
+# Include external/templated config
+include:
+  - local: '/templates/security.yml'
+  - project: 'my-group/ci-templates'
+    file: '/build.yml'
+    ref: main
+  - template: 'Jobs/SAST.gitlab-ci.yml'   # built-in template
+```
+
+#### 3.3.2 Parent-child and multi-project pipelines
+
+```yaml
+# Trigger a child pipeline
+child:
+  trigger:
+    include: child-pipeline.yml
+
+# Trigger another project's pipeline
+deploy-downstream:
+  trigger:
+    project: my-group/deploy-repo
+    branch: main
+```
+
+Useful for monorepos (run only affected sub-pipelines) and cross-project orchestration.
+
+#### 3.3.3 Dynamic pipelines
+
+Generate `.gitlab-ci.yml` at runtime, then run it:
+
+```yaml
+generate:
+  stage: build
+  script: [ "./generate-ci.sh > generated.yml" ]
+  artifacts:
+    paths: [ generated.yml ]
+
+run-generated:
+  stage: test
+  trigger:
+    include:
+      - artifact: generated.yml
+        job: generate
+```
+
+#### 3.3.4 Built-in security scanning
+
+```yaml
+include:
+  - template: Jobs/SAST.gitlab-ci.yml
+  - template: Jobs/Dependency-Scanning.gitlab-ci.yml
+  - template: Jobs/Container-Scanning.gitlab-ci.yml
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+```
+
+Results appear in the **MR security widget** and **Vulnerability Report**. GitLab offers SAST, DAST, dependency scanning, container scanning, secret detection, and license compliance.
+
+#### 3.3.5 Auto DevOps
+
+GitLab's **Auto DevOps** provides an opinionated, zero-config pipeline that auto-detects your language, builds a container, runs tests/security scans, and deploys to Kubernetes — enabled in Settings with no `.gitlab-ci.yml` required. Good for getting started; customize as you mature.
+
+#### 3.3.6 Kubernetes integration and GitOps
+
+- **GitLab Agent for Kubernetes** establishes a secure connection for deployments and GitOps.
+- Define environments backed by clusters; use review apps for per-MR previews.
+- Combine with Helm/Kustomize for deployments.
+
+#### 3.3.7 Runner executors and scaling
+
+| Executor | Use |
+|----------|-----|
+| **Shell** | Run directly on the runner host (simple, less isolated) |
+| **Docker** | Each job in a fresh container (common) |
+| **Docker Machine / autoscale** | Spin up cloud VMs on demand |
+| **Kubernetes** | Each job as a pod (elastic, cloud-native) |
+
+```toml
+# config.toml (Kubernetes executor)
+[[runners]]
+  executor = "kubernetes"
+  [runners.kubernetes]
+    namespace = "gitlab-runners"
+    image = "alpine:latest"
+```
+
+#### 3.3.8 Merge trains and merged results pipelines
+
+- **Merged results pipelines** run against the *result* of merging your MR into the target branch (catches integration issues).
+- **Merge trains** queue MRs and validate them sequentially against each other to keep `main` always green at high throughput.
+
+---
+
+## 4. Hands-on Tasks
+
+### Task 1: Create a two-stage pipeline
+
+Use the `.gitlab-ci.yml` from section 2.4; push and view the pipeline graph.
+
+**Expected:** `build` then `test` run in order, both green.
+
+### Task 2: Run a job in a specific image
+
+```yaml
+node-test:
+  image: node:20-alpine
+  script: [ "node --version", "npm ci", "npm test" ]
+```
+
+**Expected:** Job runs inside the Node image and reports test results.
+
+### Task 3: Parallel jobs in a stage
+
+Add `lint` and `unit-tests` both in the `test` stage.
+
+**Expected:** Both run concurrently within the stage.
+
+### Task 4: Produce artifacts
+
+Add an `artifacts: paths: [dist/]` to a build job.
+
+**Expected:** `dist/` is downloadable from the pipeline UI and available to later jobs.
+
+### Task 5: Add caching
+
+Cache `node_modules/` keyed by `package-lock.json`; run twice.
+
+**Expected:** Second run restores the cache and is faster.
+
+### Task 6: Use rules for a manual deploy
+
+Add a `deploy` job with `rules` requiring `main` and `when: manual`.
+
+**Expected:** A "play" button appears; deploy runs only when clicked on main.
+
+### Task 7: Define an environment
+
+Add `environment: { name: staging, url: ... }` to a deploy job.
+
+**Expected:** The environment shows under **Operate → Environments** with deployment history.
+
+### Task 8: Use a service container
+
+Add a `postgres` service and run DB-backed tests.
+
+**Expected:** Tests connect to the service successfully.
+
+### Task 9: Add a masked secret variable
+
+Create a masked CI/CD variable, use it in a job (e.g., registry login).
+
+**Expected:** The value is masked in logs.
+
+### Task 10: Include a security scanning template
+
+Add `include: - template: Jobs/SAST.gitlab-ci.yml`.
+
+**Expected:** A SAST job runs and reports findings in the MR widget.
+
+---
+
+## 5. Projects
+
+### Project 1 (Beginner): CI Pipeline for an Application
+
+**Goal:** Lint, build, and test on every push/MR.
+
+Steps:
+1. Define `build` and `test` stages.
+2. Use an appropriate image; cache dependencies.
+3. Produce JUnit test reports (`artifacts: reports: junit`).
+4. Require a passing pipeline before merge.
+5. Add a pipeline status badge.
+
+**Skills:** stages, jobs, images, caching, reports, MR integration.
+
+### Project 2 (Intermediate): Build, Containerize, Deploy to Staging
+
+**Goal:** Full CI/CD to a staging environment with a manual prod gate.
+
+Steps:
+1. Stages: `build → test → package → deploy`.
+2. Build a Docker image and push to the **GitLab Container Registry** (`$CI_REGISTRY`).
+3. Use `needs` for a faster DAG.
+4. Deploy to **staging** automatically; **production** with `when: manual`.
+5. Define environments with URLs and rollback.
+6. Add security scanning templates.
+
+**Skills:** registry, DAG pipelines, environments, manual gates, scanning.
+
+### Project 3 (Advanced): Enterprise Pipeline with Templates, K8s, and GitOps
+
+**Goal:** A scalable, secure, reusable pipeline across many repos.
+
+Steps:
+1. Centralize CI in shared templates via `include` (project/file).
+2. Use `extends`/anchors to DRY up jobs.
+3. Run on **Kubernetes executor** runners (autoscaling).
+4. Deploy to Kubernetes via the **GitLab Agent**; use **review apps** per MR.
+5. Enable full security suite (SAST/DAST/dependency/container/secret) with policy gates.
+6. Adopt **merge trains** for an always-green default branch.
+7. Implement parent-child pipelines for a monorepo (only affected services build).
+
+**Skills:** template includes, K8s runners, GitOps/Agent, review apps, security policies, merge trains, monorepo pipelines.
+
+---
+
+## 6. Best Practices & Common Pitfalls
+
+### Best Practices
+
+- **Keep `.gitlab-ci.yml` DRY** with `extends`, anchors, and `include`/templates.
+- **Use `rules`** (not deprecated `only`/`except`) for clear conditional logic.
+- **Use `needs`** to build DAG pipelines for speed.
+- **Cache dependencies; use artifacts for deliverables** — know the difference.
+- **Mask and protect secrets**; use File-type variables for certs/keys.
+- **Gate production** with `when: manual` and protected environments/branches.
+- **Pin images** to specific tags for reproducibility.
+- **Enable built-in security scanning** and act on findings.
+- **Use environments** for deployment tracking and rollback.
+- **Right-size runners**; prefer Docker/Kubernetes executors for isolation.
+- **Fail fast**; keep pipelines fast with caching and parallelism.
+
+### Common Pitfalls
+
+| Pitfall | Consequence | Fix |
+|---------|-------------|-----|
+| Using `only`/`except` everywhere | Hard-to-maintain logic | Use `rules` |
+| Confusing cache with artifacts | Lost build outputs | Artifacts for deliverables, cache for deps |
+| Unmasked secrets in variables | Leakage in logs | Mask + protect variables |
+| No `needs` (stage-bound) | Slow pipelines | Use DAG `needs` |
+| Latest/floating image tags | Non-reproducible builds | Pin image versions |
+| Shell executor for untrusted code | Host compromise | Use Docker/K8s executor, isolation |
+| Auto-deploying to prod | Risky releases | `when: manual` + protected env |
+| Huge monolithic config | Unreadable, fragile | Templates + includes |
+| Ignoring security scan results | Vulnerabilities ship | Gate MRs on scan results |
+| Unprotected variables on all branches | Secret exposure via MRs | Mark variables Protected |
+
+---
+
+## 7. Interview Questions
+
+### Beginner
+
+1. **What file defines a GitLab pipeline?**
+   *`.gitlab-ci.yml` in the repository root.*
+
+2. **What are stages and jobs?**
+   *Stages are ordered phases (build/test/deploy); jobs are units of work within a stage. Jobs in the same stage run in parallel.*
+
+3. **What is a runner?**
+   *An agent that executes pipeline jobs; can be shared, group, or self-hosted with various executors.*
+
+4. **What happens if a job in an early stage fails?**
+   *By default, subsequent stages don't run.*
+
+5. **How do jobs in the same stage run?**
+   *In parallel.*
+
+### Intermediate
+
+6. **Difference between cache and artifacts?**
+   *Cache speeds up jobs by reusing dependencies (best-effort); artifacts are deliverables reliably passed between jobs and downloadable.*
+
+7. **What does `needs` do?**
+   *Creates a DAG so a job starts as soon as its dependencies finish, rather than waiting for the whole previous stage.*
+
+8. **How do you conditionally run jobs?**
+   *With `rules` (preferred) matching branches, tags, variables, or changed files; older syntax is `only`/`except`.*
+
+9. **What are environments used for?**
+   *Tracking deployments to named targets (staging/production), enabling rollback and review apps.*
+
+10. **How do you secure variables?**
+    *Mark them Masked (hidden in logs) and Protected (only on protected branches/tags); use File type for certs.*
+
+### Advanced
+
+11. **How do you reuse CI configuration across projects?**
+    *Use `include` (local/project/template/remote), `extends`, and YAML anchors to centralize and DRY up pipelines.*
+
+12. **What are parent-child and multi-project pipelines?**
+    *Parent-child split a pipeline into triggerable sub-pipelines (great for monorepos); multi-project pipelines trigger pipelines in other repositories for cross-project orchestration.*
+
+13. **What security scanning does GitLab provide and how is it added?**
+    *SAST, DAST, dependency, container, and secret scanning plus license compliance — added via built-in `include: template:` jobs; results show in MR widgets.*
+
+14. **What problems do merge trains solve?**
+    *They keep the target branch always green at high throughput by validating queued MRs sequentially against each other's results before merging.*
+
+15. **Compare runner executors and when to use each.**
+    *Shell (simple, less isolated), Docker (isolated per-job containers, common), Docker autoscale (cloud VMs on demand), Kubernetes (each job a pod, elastic/cloud-native).*
+
+---
+
+## 8. Quizzes
+
+### Multiple Choice
+
+**Q1.** What file defines GitLab CI/CD?
+- A) `.gitlab.yml`  B) `.gitlab-ci.yml`  C) `ci.yml`  D) `pipeline.yml`
+
+**Q2.** Jobs in the same stage run:
+- A) Sequentially  B) In parallel  C) Manually  D) Never
+
+**Q3.** What executes jobs?
+- A) Pipeline  B) Stage  C) Runner  D) Artifact
+
+**Q4.** Which is the modern keyword for conditional jobs?
+- A) `only`  B) `except`  C) `rules`  D) `when` alone
+
+**Q5.** Which creates a faster DAG pipeline?
+- A) `stages`  B) `needs`  C) `cache`  D) `image`
+
+**Q6.** What passes deliverable files between jobs?
+- A) Cache  B) Artifacts  C) Variables  D) Services
+
+**Q7.** Which makes a deploy job require a click?
+- A) `when: manual`  B) `when: always`  C) `rules: never`  D) `allow_failure`
+
+**Q8.** What tracks deployments to named targets?
+- A) Stages  B) Environments  C) Runners  D) Tags
+
+**Q9.** Which reuses config from another file/project?
+- A) `extends`  B) `include`  C) `needs`  D) `trigger`
+
+**Q10.** Which executor runs each job as a Kubernetes pod?
+- A) Shell  B) Docker  C) Kubernetes  D) SSH
+
+### Short Answer
+
+**S1.** Name the three stages in a typical default pipeline order.
+
+**S2.** Which predefined variable holds the commit SHA?
+
+**S3.** How do you make a variable hidden in job logs?
+
+**S4.** What keyword lets a job inherit from a hidden template job?
+
+**S5.** Name two built-in GitLab security scan types.
+
+### Answer Key
+
+**Multiple Choice:** Q1-B, Q2-B, Q3-C, Q4-C, Q5-B, Q6-B, Q7-A, Q8-B, Q9-B, Q10-C
+
+**Short Answer:**
+- **S1.** build, test, deploy.
+- **S2.** `CI_COMMIT_SHA`.
+- **S3.** Mark it **Masked**.
+- **S4.** `extends`.
+- **S5.** Any two of: SAST, DAST, Dependency Scanning, Container Scanning, Secret Detection.
+
+---
+
+## 9. Further Resources
+
+### Official Documentation
+- GitLab CI/CD docs — https://docs.gitlab.com/ee/ci/
+- `.gitlab-ci.yml` reference — https://docs.gitlab.com/ee/ci/yaml/
+- Pipelines — https://docs.gitlab.com/ee/ci/pipelines/
+- GitLab Runner — https://docs.gitlab.com/runner/
+
+### Learning
+- GitLab CI/CD examples — https://docs.gitlab.com/ee/ci/examples/
+- GitLab Learn — https://about.gitlab.com/learn/
+- CI/CD templates — https://gitlab.com/gitlab-org/gitlab/-/tree/master/lib/gitlab/ci/templates
+
+### Tools & Features
+- Auto DevOps, GitLab Agent for Kubernetes
+- Review Apps, Merge Trains
+- Built-in Container Registry & Security Scanning
+
+### Books & Guides
+- *GitLab Quick Start Guide* — Adam O'Grady
+- Official GitLab CI/CD reference and tutorials
+
+---
+
+*End of GitLab CI/CD — Zero to Hero.*
